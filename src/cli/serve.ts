@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
@@ -70,6 +70,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     logger.info({ path: projectWiki }, 'created wiki directory');
   }
   const projectDbPath = resolveAbs(options.dbPath ?? defaultDbPathFor(projectWiki));
+  migrateLegacyDb(projectWiki, projectDbPath);
 
   const profileWiki = resolveAbs(options.profilePath ?? defaultProfileWikiPath());
   const profileDbPath = resolveAbs(
@@ -289,6 +290,24 @@ function resolveAbs(p: string): string {
 
 function defaultDbPathFor(wikiDir: string): string {
   return resolve(dirname(wikiDir), '.pinakes', 'pinakes.db');
+}
+
+/**
+ * Migrate legacy kg.db (and WAL/shm) from project root into .pinakes/.
+ */
+function migrateLegacyDb(wikiPath: string, newDbPath: string): void {
+  const parent = dirname(resolve(wikiPath));
+  const legacyDb = resolve(parent, 'kg.db');
+  if (existsSync(legacyDb) && !existsSync(newDbPath)) {
+    mkdirSync(dirname(newDbPath), { recursive: true });
+    renameSync(legacyDb, newDbPath);
+    // Move WAL and SHM files if they exist
+    for (const suffix of ['-wal', '-shm']) {
+      const old = legacyDb + suffix;
+      if (existsSync(old)) renameSync(old, newDbPath + suffix);
+    }
+    logger.info({ from: legacyDb, to: newDbPath }, 'migrated legacy kg.db');
+  }
 }
 
 function defaultProfileWikiPath(): string {

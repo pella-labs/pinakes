@@ -243,7 +243,18 @@ export function checkConsistency(
  * Compute the canonical manifest path for a given wiki directory.
  *
  * `<wikiPath>/../.pinakes/manifest.json`
+ *
+ * If a legacy `kg-manifest.json` exists in the parent directory, it is
+ * automatically migrated to the new location.
  */
 export function manifestPathFor(wikiPath: string): string {
-  return resolve(dirname(resolve(wikiPath)), '.pinakes', 'manifest.json');
+  const parent = dirname(resolve(wikiPath));
+  const newPath = resolve(parent, '.pinakes', 'manifest.json');
+  const legacyPath = resolve(parent, 'kg-manifest.json');
+  if (existsSync(legacyPath) && !existsSync(newPath)) {
+    mkdirSync(dirname(newPath), { recursive: true });
+    renameSync(legacyPath, newPath);
+    logger.info({ from: legacyPath, to: newPath }, 'migrated legacy kg-manifest.json');
+  }
+  return newPath;
 }
