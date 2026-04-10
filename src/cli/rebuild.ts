@@ -164,12 +164,10 @@ function resolveAbs(p: string): string {
 }
 
 /**
- * Default DB path for a given wiki directory: `<wikiDir>/../kg.db`. Lives
- * next to the wiki dir, inside the same `.pharos/` folder. Locked decision
- * for Phase 2 (per AskUserQuestion 2026-04-08).
+ * Default DB path for a given wiki directory: `<wikiDir>/../.pinakes/pinakes.db`.
  */
 function defaultDbPathFor(wikiDir: string): string {
-  return resolve(dirname(wikiDir), 'kg.db');
+  return resolve(dirname(wikiDir), '.pinakes', 'pinakes.db');
 }
 
 /**

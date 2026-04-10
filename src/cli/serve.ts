@@ -45,11 +45,11 @@ import type { IngestEvent } from '../ingest/source.js';
 export interface ServeOptions {
   /** Project wiki directory (required) */
   wikiPath: string;
-  /** Project DB path (default: `<wikiPath>/../kg.db`) */
+  /** Project DB path (default: `<wikiPath>/../.pinakes/pinakes.db`) */
   dbPath?: string;
   /** Personal wiki directory (default: `~/.pharos/profile/wiki` if it exists, else skip personal) */
   profilePath?: string;
-  /** Personal DB path (default: `<profilePath>/../kg.db`) */
+  /** Personal DB path (default: `<profilePath>/../.kg/kg.db`) */
   profileDbPath?: string;
 }
 
@@ -288,7 +288,7 @@ function resolveAbs(p: string): string {
 }
 
 function defaultDbPathFor(wikiDir: string): string {
-  return resolve(dirname(wikiDir), 'kg.db');
+  return resolve(dirname(wikiDir), '.pinakes', 'pinakes.db');
 }
 
 function defaultProfileWikiPath(): string {

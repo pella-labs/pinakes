@@ -145,8 +145,8 @@ function resolveDbPath(options: ImportOptions, scope: 'project' | 'personal'): s
     return resolve(profileDir, 'kg.db');
   }
   if (options.dbPath) return resolveAbs(options.dbPath);
-  if (options.wikiPath) return resolve(dirname(resolveAbs(options.wikiPath)), 'kg.db');
-  return resolve(process.cwd(), '.pharos/kg.db');
+  if (options.wikiPath) return resolve(dirname(resolveAbs(options.wikiPath)), '.pinakes', 'pinakes.db');
+  return resolve(process.cwd(), '.pinakes', 'pinakes.db');
 }
 
 function resolveAbs(p: string): string {

@@ -134,10 +134,9 @@ function inspectScope(scope: 'project' | 'personal', dbPath: string): ScopeStatu
 function resolveProjectDb(options: StatusOptions): string {
   if (options.dbPath) return resolveAbs(options.dbPath);
   if (options.wikiPath) {
-    return resolve(dirname(resolveAbs(options.wikiPath)), 'kg.db');
+    return resolve(dirname(resolveAbs(options.wikiPath)), '.pinakes', 'pinakes.db');
   }
-  // Last resort: ./.pharos/kg.db relative to cwd
-  return resolve(process.cwd(), '.pharos/kg.db');
+  return resolve(process.cwd(), '.pinakes', 'pinakes.db');
 }
 
 function resolveProfileDb(options: StatusOptions): string {
