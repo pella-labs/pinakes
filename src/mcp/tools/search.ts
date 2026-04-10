@@ -49,11 +49,12 @@ export const kgSearchInputShape = {
 export const kgSearchToolConfig = {
   title: 'Search the knowledge graph',
   description:
-    'Hybrid FTS + vector search the knowledge graph and return matching ' +
-    'chunks ranked by Reciprocal Rank Fusion. Each result includes `title` ' +
-    'and `section_path` for quick triage without reading full content. ' +
+    'Hybrid FTS + vector search the curated project knowledge wiki (not source ' +
+    'code — use grep/read for that). Best for conceptual questions about ' +
+    'architecture, conventions, and decisions. Results are ranked by Reciprocal ' +
+    'Rank Fusion with `title` and `section_path` for quick triage. ' +
     'Prefer this for short lookups; use `kg_execute` when you need to chain ' +
-    'filters, browse the wiki index, or combine multiple queries in one call.',
+    'filters, browse the wiki index, write new pages, or check knowledge gaps.',
   inputSchema: kgSearchInputShape,
 } as const;
 

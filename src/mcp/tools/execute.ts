@@ -40,8 +40,8 @@ declare const kg: {
       /** Recent log entries. */
       recent(n?: number, opts?: { kind?: string }): Array<{ id: number; ts: number; kind: string; source_uri: string | null; payload: unknown }>;
     };
-    /** Concept gaps (stub, Phase 6). */
-    gaps(opts?: { resolved?: boolean; limit?: number }): never[];
+    /** Concept gaps — topics mentioned ≥3 times with no dedicated wiki page. Check these to find what the wiki is missing, then write() to fill them. */
+    gaps(opts?: { resolved?: boolean }): Array<{ id: number; topic: string; first_seen_at: number; mentions_count: number; resolved_at: number | null }>;
     /** Create or overwrite a wiki page. Path is relative to wiki root, .md extension enforced. */
     write(path: string, content: string): { path: string; bytes: number };
     /** Append a timestamped entry to log.md. */
@@ -98,11 +98,19 @@ export const kgExecuteInputShape = {
 export const kgExecuteToolConfig = {
   title: 'Run JS in the knowledge-graph sandbox',
   description:
-    'Run a short JavaScript snippet inside the KG sandbox. Use `kg.project.index()` ' +
-    'to browse the wiki table of contents, then `kg.project.get(id)` to read ' +
-    'specific sections. `kg.project.hybrid()` for search, ' +
-    '`kg.project.neighbors()` for graph traversal, `kg.project.log.recent()` for ' +
-    'event log. Legacy `kg.search()`/`kg.get()` also available. ' +
+    'Run a short JavaScript snippet inside the KG sandbox. The KG indexes a ' +
+    'curated markdown wiki of project knowledge (architecture decisions, ' +
+    'conventions, concepts) — not the source code. Use grep/read for source ' +
+    'files; use this for wiki content.\n\n' +
+    'Read: `kg.project.index()` to browse the wiki TOC, `kg.project.get(id)` for ' +
+    'full content, `kg.project.hybrid()` for search, `kg.project.neighbors()` ' +
+    'for graph traversal, `kg.project.log.recent()` for event log.\n\n' +
+    'Write: `kg.project.write(path, content)` to create/update wiki pages, ' +
+    '`kg.project.append(entry)` to add log entries, `kg.project.remove(path)` ' +
+    'to delete.\n\n' +
+    'Gaps: `kg.project.gaps()` returns concepts mentioned ≥3 times in the wiki ' +
+    'that have no dedicated page — use this to discover what knowledge is missing ' +
+    'and fill it with write().\n\n' +
     '64MB memory cap, 2s default timeout. No network, no eval.\n\n' +
     KG_EXECUTE_TYPES,
   inputSchema: kgExecuteInputShape,
