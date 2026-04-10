@@ -11,10 +11,8 @@ import { logger } from '../observability/logger.js';
  * Consistency manifest for KG-MCP Phase 2.
  *
  * Lives at:
- *   - `<wikiPath>/../kg-manifest.json` for project scope
- *     (e.g. `.pharos/kg-manifest.json` next to `.pharos/wiki/`)
- *   - `<profilePath>/kg-manifest.json` for personal scope
- *     (e.g. `~/.pharos/profile/kg-manifest.json`)
+ *   - `<wikiPath>/../.pinakes/manifest.json` for project scope
+ *   - `<profilePath>/../.pinakes/manifest.json` for personal scope
  *
  * **What it stores**: per ingested file, the file-level `source_sha` and
  * the list of per-chunk `chunk_shas` that ingest produced. This is the
@@ -242,16 +240,10 @@ export function checkConsistency(
 }
 
 /**
- * Compute the canonical manifest path for a given wiki directory and scope.
+ * Compute the canonical manifest path for a given wiki directory.
  *
- * - `'project'` → `<wikiPath>/../kg-manifest.json`
- *   (lives next to the wiki dir, inside the same `.pharos/` folder)
- * - `'personal'` → `<wikiPath>/../kg-manifest.json` as well
- *   (lives next to `~/.pharos/profile/wiki/`, in `~/.pharos/profile/`)
- *
- * Both scopes use the same relative shape — the difference is the wikiPath
- * the caller passes in.
+ * `<wikiPath>/../.pinakes/manifest.json`
  */
 export function manifestPathFor(wikiPath: string): string {
-  return resolve(dirname(resolve(wikiPath)), 'kg-manifest.json');
+  return resolve(dirname(resolve(wikiPath)), '.pinakes', 'manifest.json');
 }
