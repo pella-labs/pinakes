@@ -26,7 +26,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:generate": "drizzle-kit generate",
     "kg": "tsx src/cli/index.ts",
-    "prepublishOnly": "pnpm run build"
+    "prepublishOnly": "pnpm run build",
+    "publish:npm": "pnpm publish --access public"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
