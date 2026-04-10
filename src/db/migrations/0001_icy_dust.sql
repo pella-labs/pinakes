@@ -1,0 +1,1 @@
+ALTER TABLE `kg_nodes` ADD `confidence` text DEFAULT 'extracted' NOT NULL;
