@@ -1,7 +1,7 @@
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -73,10 +73,10 @@ describe('self-healing: DB cross-validation in checkConsistency', () => {
     await c.ingester.ingestFile(path);
 
     const manifest = readManifest(c.manifestPath);
-    expect(manifest.files[resolve(path)]).toBeDefined();
+    expect(manifest.files['auth.md']).toBeDefined();
 
     // Without DB cross-check: manifest matches disk → not stale.
-    const staleWithoutDb = checkConsistency(manifest, c.wikiDir);
+    const staleWithoutDb = checkConsistency(manifest, c.wikiDir, 'project');
     expect(staleWithoutDb.length).toBe(0);
 
     // Now delete the DB rows (simulating DB recreation / migration drop).
@@ -86,7 +86,7 @@ c.bundle.writer.exec('DELETE FROM kg_chunks_vec');
 c.bundle.writer.exec('DELETE FROM kg_nodes');
 
     // With DB cross-check: manifest says indexed, DB says empty → stale.
-    const staleWithDb = checkConsistency(manifest, c.wikiDir, c.bundle.writer);
+    const staleWithDb = checkConsistency(manifest, c.wikiDir, 'project', c.bundle.writer);
     expect(staleWithDb.length).toBe(1);
     expect(staleWithDb[0]).toBe(resolve(path));
   });
@@ -104,8 +104,8 @@ c.bundle.writer.exec('DELETE FROM kg_chunks_vec');
 c.bundle.writer.exec('DELETE FROM kg_nodes');
 
     // checkConsistency mutates the manifest — clears the entry for the stale file.
-    checkConsistency(manifest, c.wikiDir, c.bundle.writer);
-    expect(manifest.files[resolve(path)]).toBeUndefined();
+    checkConsistency(manifest, c.wikiDir, 'project', c.bundle.writer);
+    expect(manifest.files['auth.md']).toBeUndefined();
 
     // Now re-ingest — should NOT noop because the manifest entry was cleared.
     __resetSingleFlightForTests();
@@ -152,7 +152,7 @@ c.bundle.writer.exec('DELETE FROM kg_nodes');
 
     // Delete only auth.md's rows from DB (keep api.md).
     // Clean up vec rows first (no FK cascade for virtual tables).
-    const authUri = pathToFileURL(resolve(authPath)).href;
+    const authUri = 'auth.md';
     const authRowids = c.bundle.writer
       .prepare(
         `SELECT c.rowid AS rowid FROM kg_chunks c
@@ -171,7 +171,7 @@ c.bundle.writer.exec('DELETE FROM kg_nodes');
       .run(authUri);
 
     // Only auth.md should be flagged as stale.
-    const stale = checkConsistency(manifest, c.wikiDir, c.bundle.writer);
+    const stale = checkConsistency(manifest, c.wikiDir, 'project', c.bundle.writer);
     expect(stale.length).toBe(1);
     expect(stale[0]).toBe(resolve(authPath));
   });
@@ -187,11 +187,11 @@ c.bundle.writer.exec('DELETE FROM kg_nodes');
 
     const manifest = readManifest(c.manifestPath);
     // new-topic.md is not in the manifest at all.
-    expect(manifest.files[resolve(join(c.wikiDir, 'new-topic.md'))]).toBeUndefined();
+    expect(manifest.files['new-topic.md']).toBeUndefined();
 
     // Should be flagged as stale with or without DB cross-check.
-    const staleWithoutDb = checkConsistency(manifest, c.wikiDir);
-    const staleWithDb = checkConsistency(manifest, c.wikiDir, c.bundle.writer);
+    const staleWithoutDb = checkConsistency(manifest, c.wikiDir, 'project');
+    const staleWithDb = checkConsistency(manifest, c.wikiDir, 'project', c.bundle.writer);
 
     const newPath = resolve(join(c.wikiDir, 'new-topic.md'));
     expect(staleWithoutDb).toContain(newPath);
@@ -212,7 +212,7 @@ c.bundle.writer.exec('DELETE FROM kg_nodes');
     // Simulate what serve.ts startup does: reload manifest, check, re-ingest.
     c.ingester.reloadManifest();
     const manifest = c.ingester.getManifest();
-    const stale = checkConsistency(manifest, c.wikiDir, c.bundle.writer);
+    const stale = checkConsistency(manifest, c.wikiDir, 'project', c.bundle.writer);
     expect(stale.length).toBe(1);
 
     // Write the cleared manifest so ingester doesn't noop.

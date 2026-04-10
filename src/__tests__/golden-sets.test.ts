@@ -186,7 +186,7 @@ function evaluateGoldenSet(
 
     // Hit: at least one expected file in top-k
     const matchedIdx = topK.findIndex((uri) =>
-      entry.expectedFiles.some((f) => uri.includes(`/${f}.md`))
+      entry.expectedFiles.some((f) => uri === `${f}.md` || uri.includes(`/${f}.md`))
     );
     const isHit = matchedIdx >= 0;
     if (isHit) {
@@ -196,16 +196,13 @@ function evaluateGoldenSet(
       failures.push({
         query: entry.query,
         expected: entry.expectedFiles,
-        got: topK.map((u) => {
-          const parts = u.split('/');
-          return parts[parts.length - 1]?.replace('.md', '') ?? u;
-        }),
+        got: topK.map((u) => u.replace(/\.md$/, '').split('/').pop() ?? u),
       });
     }
 
     // Precision@k: fraction of top-k that are expected
     const relevant = topK.filter((uri) =>
-      entry.expectedFiles.some((f) => uri.includes(`/${f}.md`))
+      entry.expectedFiles.some((f) => uri === `${f}.md` || uri.includes(`/${f}.md`))
     ).length;
     precSum += relevant / k;
   }

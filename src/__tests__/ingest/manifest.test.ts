@@ -79,28 +79,28 @@ describe('ingest/manifest (Phase 2)', () => {
     await c.ingester.ingestFile(path);
 
     const manifest1 = readManifest(c.manifestPath);
-    expect(manifest1.files[resolve(path)]).toBeDefined();
-    const realSha = manifest1.files[resolve(path)]!.source_sha;
+    expect(manifest1.files['auth.md']).toBeDefined();
+    const realSha = manifest1.files['auth.md']!.source_sha;
     expect(realSha).toMatch(/^[0-9a-f]{40}$/);
 
     // Sanity: a fresh consistency check finds nothing stale (manifest matches disk)
-    const stale1 = checkConsistency(manifest1, c.wikiDir);
+    const stale1 = checkConsistency(manifest1, c.wikiDir, 'project');
     expect(stale1.length).toBe(0);
 
     // Now corrupt the manifest's source_sha for that file (simulating either
     // an external file edit OR a crash before writeManifest could persist
     // the new sha after a successful ingest).
     const corrupted = readManifest(c.manifestPath);
-    corrupted.files[resolve(path)]!.source_sha = 'a'.repeat(40); // bogus sha
+    corrupted.files['auth.md']!.source_sha = 'a'.repeat(40); // bogus sha
     writeManifest(c.manifestPath, corrupted);
 
     // Reload the manifest from disk (simulating a fresh process startup)
     const manifest2 = readManifest(c.manifestPath);
-    expect(manifest2.files[resolve(path)]!.source_sha).toBe('a'.repeat(40));
+    expect(manifest2.files['auth.md']!.source_sha).toBe('a'.repeat(40));
 
     // Consistency check now reports the file as stale → it would be enqueued
     // for re-ingest by `kg serve`'s startup check.
-    const stale2 = checkConsistency(manifest2, c.wikiDir);
+    const stale2 = checkConsistency(manifest2, c.wikiDir, 'project');
     expect(stale2.length).toBe(1);
     expect(stale2[0]).toBe(resolve(path));
   });

@@ -82,7 +82,7 @@ function hitRate(
   for (const entry of queries) {
     const topK = (results.get(entry.query) ?? []).slice(0, k);
     const idx = topK.findIndex((uri) =>
-      entry.expectedFiles.some((f) => uri.includes(`/${f}.md`))
+      entry.expectedFiles.some((f) => uri === `${f}.md` || uri.includes(`/${f}.md`))
     );
     if (idx >= 0) {
       hits++;

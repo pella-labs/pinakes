@@ -269,7 +269,7 @@ async function runStartupConsistency(
 ): Promise<void> {
   ingester.reloadManifest();
   const manifest = ingester.getManifest();
-  const stale = checkConsistency(manifest, wikiDir, writer);
+  const stale = checkConsistency(manifest, wikiDir, scope, writer);
   if (stale.length === 0) {
     logger.info({ scope, wikiDir }, 'startup consistency check: nothing stale');
     return;

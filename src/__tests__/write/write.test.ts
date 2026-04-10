@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFile
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pathToFileURL } from 'node:url';
+
 
 import { closeDb, openDb, nextReader, type DbBundle } from '../../db/client.js';
 import { Repository } from '../../db/repository.js';
@@ -385,7 +385,7 @@ describe('write + re-ingest round-trip', () => {
 
     // Step 3: verify nodes + chunks appear in DB
     const reader = nextReader(bundle);
-    const sourceUri = pathToFileURL(join(wikiDir, 'ingest-roundtrip.md')).href;
+    const sourceUri = 'ingest-roundtrip.md';
     const nodes = reader
       .prepare<[string], { id: string; section_path: string }>(
         `SELECT id, section_path FROM kg_nodes WHERE source_uri = ?`

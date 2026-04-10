@@ -1,9 +1,9 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, normalize, resolve, sep } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 
+import { toStoredUri } from '../../ingest/manifest.js';
 import { logger } from '../../observability/logger.js';
 
 /**
@@ -108,6 +108,7 @@ function auditLog(
   scope: string,
   kind: string,
   filePath: string,
+  wikiRoot: string,
   payload: Record<string, unknown>
 ): void {
   try {
@@ -116,7 +117,7 @@ function auditLog(
         `INSERT INTO kg_log (ts, scope, kind, source_uri, payload)
          VALUES (?, ?, ?, ?, ?)`
       )
-      .run(Date.now(), scope, kind, pathToFileURL(filePath).href, JSON.stringify(payload));
+      .run(Date.now(), scope, kind, toStoredUri(filePath, wikiRoot, scope as 'project' | 'personal'), JSON.stringify(payload));
   } catch (err) {
     logger.warn({ err, kind, filePath }, 'failed to append write audit to kg_log');
   }
@@ -172,7 +173,7 @@ export function writeWikiFile(
   // Relative path for the response
   const relativePath = resolved.slice(wikiRoot.length + 1);
 
-  auditLog(writer, scope, 'write', resolved, { bytes, relativePath });
+  auditLog(writer, scope, 'write', resolved, wikiRoot, { bytes, relativePath });
 
   return { path: relativePath, bytes };
 }
@@ -228,7 +229,7 @@ export function appendWikiLog(
     throw err;
   }
 
-  auditLog(writer, scope, 'append', logPath, { entry, bytes: lineBytes });
+  auditLog(writer, scope, 'append', logPath, wikiRoot, { entry, bytes: lineBytes });
 
   return { path: 'log.md', bytes: lineBytes };
 }
@@ -258,7 +259,7 @@ export function removeWikiFile(
 
   unlinkSync(resolved);
 
-  auditLog(writer, scope, 'remove', resolved, { relativePath });
+  auditLog(writer, scope, 'remove', resolved, wikiRoot, { relativePath });
 
   return { path: relativePath, removed: true };
 }

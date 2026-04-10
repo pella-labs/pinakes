@@ -87,7 +87,7 @@ export const kgNodes = sqliteTable(
     id: text('id').primaryKey(),
     /** 'project' | 'personal' — enforced at app layer, not as a CHECK */
     scope: text('scope').notNull(),
-    /** file:// URL of the source markdown file */
+    /** Relative path from wiki root (project scope) or file:// URL (personal scope) */
     sourceUri: text('source_uri').notNull(),
     /** Heading hierarchy joined by ' / '; empty string for pre-heading content */
     sectionPath: text('section_path').notNull(),

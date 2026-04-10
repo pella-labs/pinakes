@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 
@@ -17,6 +16,8 @@ import {
   manifestPathFor,
   readManifest,
   removeManifestEntry,
+  toStoredKey,
+  toStoredUri,
   updateManifestEntry,
   writeManifest,
 } from './manifest.js';
@@ -121,6 +122,7 @@ export function __resetSingleFlightForTests(): void {
 export class IngesterService {
   private manifest: Manifest;
   private readonly manifestPath: string;
+  private readonly wikiRoot: string;
 
   constructor(
     private readonly bundle: DbBundle,
@@ -129,6 +131,7 @@ export class IngesterService {
     wikiRoot: string,
     options: IngesterOptions = {}
   ) {
+    this.wikiRoot = resolve(wikiRoot);
     this.manifestPath = options.manifestPath ?? manifestPathFor(wikiRoot);
     this.manifest = readManifest(this.manifestPath);
   }
@@ -169,13 +172,13 @@ export class IngesterService {
    */
   removeFile(absPath: string): void {
     const abs = resolve(absPath);
-    const sourceUri = pathToFileURL(abs).href;
+    const sourceUri = toStoredUri(abs, this.wikiRoot, this.scope);
 
     this.bundle.writer
       .prepare('DELETE FROM kg_nodes WHERE scope = ? AND source_uri = ?')
       .run(this.scope, sourceUri);
 
-    this.manifest = removeManifestEntry(this.manifest, abs);
+    this.manifest = removeManifestEntry(this.manifest, abs, this.wikiRoot, this.scope);
     writeManifest(this.manifestPath, this.manifest);
 
     this.appendLog('ingest:removed', abs, {});
@@ -205,10 +208,11 @@ export class IngesterService {
     // Step 1: read file + compute file-level sha
     const text = readFileSync(absPath, 'utf8');
     const sourceSha = sha1(text);
-    const sourceUri = pathToFileURL(absPath).href;
+    const sourceUri = toStoredUri(absPath, this.wikiRoot, this.scope);
 
     // Step 2: manifest fast path — same source_sha → no work
-    const existingEntry = this.manifest.files[absPath];
+    const manifestKey = toStoredKey(absPath, this.wikiRoot, this.scope);
+    const existingEntry = this.manifest.files[manifestKey];
     if (existingEntry && existingEntry.source_sha === sourceSha) {
       return {
         chunks_added: 0,
@@ -382,7 +386,7 @@ export class IngesterService {
     // Step 8: update manifest (AFTER commit)
     const allChunkShas = planned.flatMap((n) => n.chunks.map((c) => c.chunkSha));
     const newEntry: ManifestEntry = { source_sha: sourceSha, chunk_shas: allChunkShas };
-    this.manifest = updateManifestEntry(this.manifest, absPath, newEntry);
+    this.manifest = updateManifestEntry(this.manifest, absPath, newEntry, this.wikiRoot, this.scope);
     writeManifest(this.manifestPath, this.manifest);
 
     return {
@@ -441,7 +445,7 @@ export class IngesterService {
           `INSERT INTO kg_log (ts, scope, kind, source_uri, payload)
            VALUES (?, ?, ?, ?, ?)`
         )
-        .run(Date.now(), this.scope, kind, pathToFileURL(absPath).href, JSON.stringify(payload));
+        .run(Date.now(), this.scope, kind, toStoredUri(absPath, this.wikiRoot, this.scope), JSON.stringify(payload));
     } catch (err) {
       logger.warn({ err, kind, absPath }, 'failed to append kg_log row');
     }

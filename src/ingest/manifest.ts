@@ -1,11 +1,47 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 
 import { logger } from '../observability/logger.js';
+
+import type { Scope } from './source.js';
+
+// ============================================================================
+// Path conversion helpers — project scope uses relative paths, personal uses absolute
+// ============================================================================
+
+/**
+ * Convert an absolute file path to a POSIX-normalized path relative to `wikiRoot`.
+ * Used for project-scope manifest keys and source_uri values.
+ */
+export function toRelativePath(absPath: string, wikiRoot: string): string {
+  return relative(resolve(wikiRoot), resolve(absPath)).split(sep).join('/');
+}
+
+/**
+ * Convert an absolute file path to the stored `source_uri` format:
+ * - project scope → relative path from wiki root (e.g. `auth.md`)
+ * - personal scope → absolute `file://` URL
+ */
+export function toStoredUri(absPath: string, wikiRoot: string, scope: Scope): string {
+  return scope === 'project'
+    ? toRelativePath(absPath, wikiRoot)
+    : pathToFileURL(resolve(absPath)).href;
+}
+
+/**
+ * Convert an absolute file path to the manifest dictionary key:
+ * - project scope → relative path from wiki root
+ * - personal scope → absolute path
+ */
+export function toStoredKey(absPath: string, wikiRoot: string, scope: Scope): string {
+  return scope === 'project'
+    ? toRelativePath(absPath, wikiRoot)
+    : resolve(absPath);
+}
 
 /**
  * Consistency manifest for KG-MCP Phase 2.
@@ -39,7 +75,7 @@ import { logger } from '../observability/logger.js';
  * per-chunk embedding metadata).
  */
 
-const MANIFEST_VERSION = 1;
+const MANIFEST_VERSION = 2;
 
 export interface ManifestEntry {
   /** sha1 of the entire source file */
@@ -50,7 +86,7 @@ export interface ManifestEntry {
 
 export interface Manifest {
   version: number;
-  /** Maps absolute file paths → entry */
+  /** Maps stored file paths → entry. Relative paths for project scope, absolute for personal. */
   files: Record<string, ManifestEntry>;
 }
 
@@ -107,24 +143,26 @@ export function writeManifest(path: string, manifest: Manifest): void {
 /**
  * Update one entry in a manifest in-memory. Mutates the input and returns it
  * (the caller is expected to follow up with `writeManifest`). The entry's
- * key is the absolute path to the file as it was ingested.
+ * key is scope-dependent: relative path for project, absolute for personal.
  */
 export function updateManifestEntry(
   manifest: Manifest,
   filePath: string,
-  entry: ManifestEntry
+  entry: ManifestEntry,
+  wikiRoot: string,
+  scope: Scope
 ): Manifest {
-  const abs = resolve(filePath);
-  manifest.files[abs] = entry;
+  const key = toStoredKey(filePath, wikiRoot, scope);
+  manifest.files[key] = entry;
   return manifest;
 }
 
 /**
  * Drop a file from the manifest (e.g. after a `file:removed` event).
  */
-export function removeManifestEntry(manifest: Manifest, filePath: string): Manifest {
-  const abs = resolve(filePath);
-  delete manifest.files[abs];
+export function removeManifestEntry(manifest: Manifest, filePath: string, wikiRoot: string, scope: Scope): Manifest {
+  const key = toStoredKey(filePath, wikiRoot, scope);
+  delete manifest.files[key];
   return manifest;
 }
 
@@ -198,6 +236,7 @@ export function listMarkdownFiles(rootDir: string): string[] {
 export function checkConsistency(
   manifest: Manifest,
   rootDir: string,
+  scope: Scope,
   writer?: BetterSqliteDatabase
 ): string[] {
   const stale: string[] = [];
@@ -218,20 +257,21 @@ export function checkConsistency(
   }
 
   for (const f of files) {
-    const entry = manifest.files[f];
+    const key = toStoredKey(f, rootDir, scope);
+    const entry = manifest.files[key];
     const onDiskSha = fileSha(f);
     if (!entry || entry.source_sha !== onDiskSha) {
       stale.push(f);
     } else if (indexedUris) {
       // Manifest says this file is current — verify the DB agrees.
-      const sourceUri = pathToFileURL(resolve(f)).href;
-      if (!indexedUris.has(sourceUri)) {
+      const storedUri = toStoredUri(f, rootDir, scope);
+      if (!indexedUris.has(storedUri)) {
         logger.info(
           { file: f },
           'checkConsistency: manifest says indexed but DB has no rows — marking stale'
         );
         // Clear the manifest entry so the ingester's fast-path doesn't noop.
-        delete manifest.files[f];
+        delete manifest.files[key];
         stale.push(f);
       }
     }

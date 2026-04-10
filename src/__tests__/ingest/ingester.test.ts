@@ -1,7 +1,7 @@
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -230,9 +230,9 @@ describe('ingest/ingester (Phase 2)', () => {
 
     // Manifest file exists on disk
     const manifest = readManifest(c.manifestPath);
-    expect(manifest.version).toBe(1);
+    expect(manifest.version).toBe(2);
 
-    const entry = manifest.files[resolve(path)];
+    const entry = manifest.files['auth.md'];
     expect(entry).toBeDefined();
     expect(entry!.source_sha).toMatch(/^[0-9a-f]{40}$/);
     expect(entry!.chunk_shas.length).toBeGreaterThan(0);
@@ -257,7 +257,7 @@ describe('ingest/ingester (Phase 2)', () => {
 
     expect(after.kind).toBe('ingest:done');
     expect(after.scope).toBe('project');
-    expect(after.source_uri).toBe(pathToFileURL(path).href);
+    expect(after.source_uri).toBe('auth.md');
     const payload = JSON.parse(after.payload) as {
       nodes: number;
       chunks_added: number;
