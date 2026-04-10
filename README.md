@@ -186,7 +186,7 @@ Changing the embedder requires a full rebuild (`pinakes rebuild`) since the vect
 ## Development
 
 ```bash
-git clone <repo-url> && cd knowledge-graph
+git clone https://github.com/pella-labs/pinakes.git && cd pinakes
 pnpm install
 pnpm run dev              # Watch mode
 pnpm run test             # Run tests (vitest)
@@ -198,4 +198,4 @@ pnpm run lint             # eslint
 
 ## License
 
-See LICENSE file.
+[MIT](LICENSE)
