@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
@@ -66,7 +66,8 @@ interface ServerHandle {
 export async function buildServer(options: ServeOptions): Promise<ServerHandle> {
   const projectWiki = resolveAbs(options.wikiPath);
   if (!existsSync(projectWiki)) {
-    throw new Error(`wiki path does not exist: ${projectWiki}`);
+    mkdirSync(projectWiki, { recursive: true });
+    logger.info({ path: projectWiki }, 'created wiki directory');
   }
   const projectDbPath = resolveAbs(options.dbPath ?? defaultDbPathFor(projectWiki));
 
