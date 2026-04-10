@@ -267,6 +267,25 @@ async function runStartupConsistency(
   scope: 'project' | 'personal',
   writer?: import('better-sqlite3').Database
 ): Promise<void> {
+  // Migrate legacy absolute file:// URIs to relative paths (0.1.9+).
+  // Old project-scope rows have source_uri like "file:///abs/path/auth.md";
+  // new rows use relative paths like "auth.md". Delete the orphans so they
+  // don't pollute search results after re-ingest.
+  if (scope === 'project' && writer) {
+    try {
+      const orphaned = writer
+        .prepare("SELECT COUNT(*) AS cnt FROM kg_nodes WHERE scope = 'project' AND source_uri LIKE 'file://%'")
+        .get() as { cnt: number };
+      if (orphaned.cnt > 0) {
+        logger.info({ count: orphaned.cnt }, 'migrating legacy absolute-path rows — deleting orphans before re-ingest');
+        writer.exec("DELETE FROM kg_chunks_vec WHERE rowid IN (SELECT c.rowid FROM kg_chunks c JOIN kg_nodes n ON c.node_id = n.id WHERE n.scope = 'project' AND n.source_uri LIKE 'file://%')");
+        writer.exec("DELETE FROM kg_nodes WHERE scope = 'project' AND source_uri LIKE 'file://%'");
+      }
+    } catch (err) {
+      logger.warn({ err }, 'legacy URI migration check failed — continuing');
+    }
+  }
+
   ingester.reloadManifest();
   const manifest = ingester.getManifest();
   const stale = checkConsistency(manifest, wikiDir, scope, writer);

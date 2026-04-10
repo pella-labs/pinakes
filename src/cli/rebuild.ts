@@ -119,6 +119,22 @@ async function rebuildOneScope(args: {
 
   const bundle = openDb(dbPath);
   try {
+    // Clean up legacy absolute file:// URIs before rebuild (0.1.9+ migration).
+    if (scope === 'project') {
+      try {
+        const orphaned = bundle.writer
+          .prepare("SELECT COUNT(*) AS cnt FROM kg_nodes WHERE scope = 'project' AND source_uri LIKE 'file://%'")
+          .get() as { cnt: number };
+        if (orphaned.cnt > 0) {
+          logger.info({ count: orphaned.cnt }, 'rebuild: deleting legacy absolute-path rows');
+          bundle.writer.exec("DELETE FROM kg_chunks_vec WHERE rowid IN (SELECT c.rowid FROM kg_chunks c JOIN kg_nodes n ON c.node_id = n.id WHERE n.scope = 'project' AND n.source_uri LIKE 'file://%')");
+          bundle.writer.exec("DELETE FROM kg_nodes WHERE scope = 'project' AND source_uri LIKE 'file://%'");
+        }
+      } catch (err) {
+        logger.warn({ err }, 'legacy URI cleanup failed — continuing');
+      }
+    }
+
     const ingester = new IngesterService(bundle, embedder, scope, wikiDir);
     const files = listMarkdownFiles(wikiDir);
 
