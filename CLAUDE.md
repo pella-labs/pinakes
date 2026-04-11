@@ -225,7 +225,7 @@ pnpm run kg -- import --scope <s> --in f   # restore from dump
 
 ## AI Rules
 
-1. **We don't call LLMs on the query path.** The calling LLM is the client's concern. Our only LLM call is the gap-detection Haiku sub-agent in Phase 6 stretch / Phase 8.
+1. **We don't call LLMs on the query path by default.** The calling LLM is the client's concern. The exception is the opt-in `expand` param on `kg_search` (D38) which uses the LLM provider factory (D36) for multi-query expansion — non-fatal, falls back to the original query if no provider is available. The contradiction detector (Phase 8 H) also uses the LLM provider but is a background CLI command, not a query-path call.
 
 2. **Gap-detection sub-agent is rate-limited**: max 1 call per hour background, or explicit user command. Never per query.
 

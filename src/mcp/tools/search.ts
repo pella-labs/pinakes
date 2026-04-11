@@ -3,7 +3,10 @@ import { z } from 'zod';
 import type { Repository } from '../../db/repository.js';
 import type { DbBundle } from '../../db/client.js';
 import type { Embedder } from '../../retrieval/embedder.js';
-import { hybridSearch } from '../../retrieval/hybrid.js';
+import type { LlmProvider } from '../../llm/provider.js';
+import { hybridSearch, rrfFuseMulti } from '../../retrieval/hybrid.js';
+import { dedupResults } from '../../retrieval/dedup.js';
+import { expandQuery } from '../../retrieval/expand.js';
 import { fitResults, countEnvelopeTokens } from '../../gate/budget.js';
 import { buildEnvelope, QueryTimer, type Scope } from '../envelope.js';
 import { nextReader } from '../../db/client.js';
@@ -44,6 +47,15 @@ export const kgSearchInputShape = {
         '"personal" searches the personal wiki, "both" merges results from ' +
         'both with `source_scope` tagging on each result.'
     ),
+  expand: z
+    .boolean()
+    .optional()
+    .describe(
+      'Set to true to use an LLM for multi-query expansion. Generates 2 ' +
+        'alternative phrasings and merges results via RRF for better recall. ' +
+        'Requires an LLM provider (Ollama, API key, or Claude/Codex CLI). ' +
+        'Non-fatal: falls back to the original query if unavailable.'
+    ),
 };
 
 export const kgSearchToolConfig = {
@@ -63,6 +75,7 @@ export interface KgSearchDeps {
   embedder: Embedder;
   bundle: DbBundle;
   personalBundle?: DbBundle;
+  llmProvider?: LlmProvider;
 }
 
 interface TaggedResult {
@@ -84,10 +97,12 @@ export function makeKgSearchHandler(deps: KgSearchDeps) {
     query: string;
     max_tokens?: number;
     scope?: 'project' | 'personal' | 'both';
+    expand?: boolean;
   }): Promise<{ content: [{ type: 'text'; text: string }]; isError?: boolean }> => {
     const timer = new QueryTimer();
     const maxTokens = args.max_tokens ?? 5000;
     const scope: Scope = args.scope ?? 'project';
+    const shouldExpand = args.expand === true;
 
     // Check personal scope availability
     if ((scope === 'personal' || scope === 'both') && !deps.personalBundle) {
@@ -106,12 +121,26 @@ export function makeKgSearchHandler(deps: KgSearchDeps) {
       return wrapText(envelope);
     }
 
-    let allHits: TaggedResult[] = [];
+    // Determine query variants: original + optional expansions
+    const queries = [args.query];
+    if (shouldExpand && deps.llmProvider) {
+      const expanded = await expandQuery(args.query, deps.llmProvider);
+      queries.push(...expanded.alternatives);
+    }
+
+    const allHits: TaggedResult[] = [];
 
     if (scope === 'project' || scope === 'both') {
       const reader = nextReader(deps.bundle);
-      const hits = await hybridSearch(reader, 'project', args.query, deps.embedder);
-      const tagged: TaggedResult[] = hits.map((h) => ({
+      // Run hybrid search for all query variants
+      const hitLists = await Promise.all(
+        queries.map((q) => hybridSearch(reader, 'project', q, deps.embedder, { dedup: false }))
+      );
+      // If multiple queries, merge via multi-list RRF then dedup
+      const merged = hitLists.length > 1
+        ? dedupResults(rrfFuseMulti(hitLists, 60, 40)).slice(0, 20)
+        : hitLists[0];
+      const tagged: TaggedResult[] = merged.map((h) => ({
         id: h.id, text: h.text, source_uri: h.source_uri, score: h.score,
         confidence: h.confidence, title: h.title, section_path: h.section_path,
         ...(scope === 'both' ? { source_scope: 'project' as const } : {}),
@@ -121,8 +150,13 @@ export function makeKgSearchHandler(deps: KgSearchDeps) {
 
     if ((scope === 'personal' || scope === 'both') && deps.personalBundle) {
       const reader = nextReader(deps.personalBundle);
-      const hits = await hybridSearch(reader, 'personal', args.query, deps.embedder);
-      const tagged: TaggedResult[] = hits.map((h) => ({
+      const hitLists = await Promise.all(
+        queries.map((q) => hybridSearch(reader, 'personal', q, deps.embedder, { dedup: false }))
+      );
+      const merged = hitLists.length > 1
+        ? dedupResults(rrfFuseMulti(hitLists, 60, 40)).slice(0, 20)
+        : hitLists[0];
+      const tagged: TaggedResult[] = merged.map((h) => ({
         id: h.id, text: h.text, source_uri: h.source_uri, score: h.score,
         confidence: h.confidence, title: h.title, section_path: h.section_path,
         ...(scope === 'both' ? { source_scope: 'personal' as const } : {}),

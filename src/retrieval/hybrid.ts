@@ -1,6 +1,7 @@
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 
 import type { Embedder } from './embedder.js';
+import { dedupResults } from './dedup.js';
 import { ftsQuery, type FtsResult } from './fts.js';
 import { vecSearch, type VecResult } from './vec.js';
 
@@ -40,6 +41,8 @@ export interface HybridResult {
 export interface HybridSearchOpts {
   limit?: number;
   rrf_k?: number;
+  /** Set to false to disable post-RRF dedup (default: true). */
+  dedup?: boolean;
 }
 
 /**
@@ -64,9 +67,12 @@ export async function hybridSearch(
 ): Promise<HybridResult[]> {
   const limit = Math.min(Math.max(opts?.limit ?? 20, 1), 100);
   const rrfK = opts?.rrf_k ?? DEFAULT_RRF_K;
+  const shouldDedup = opts?.dedup !== false;
 
   // Over-fetch from each source so RRF has good coverage.
-  const fetchLimit = Math.min(limit * 2, 100);
+  // When dedup is on, fetch extra since dedup will remove some results.
+  const dedupOverfetch = shouldDedup ? 3 : 2;
+  const fetchLimit = Math.min(limit * dedupOverfetch, 100);
 
   // Run both queries. Vec is async (embedding), FTS is sync.
   const [ftsResults, vecResults] = await Promise.all([
@@ -74,7 +80,10 @@ export async function hybridSearch(
     vecSearch(reader, scope, query, embedder, fetchLimit),
   ]);
 
-  return rrfFuse(ftsResults, vecResults, rrfK, limit);
+  const fused = rrfFuse(ftsResults, vecResults, rrfK, shouldDedup ? limit * 2 : limit);
+
+  if (!shouldDedup) return fused;
+  return dedupResults(fused).slice(0, limit);
 }
 
 /**
@@ -142,6 +151,60 @@ export function rrfFuse(
   }
 
   // Sort by descending RRF score, assign final score, trim to limit.
+  const sorted = [...merged.values()].sort((a, b) => b._rrfScore - a._rrfScore);
+
+  return sorted.slice(0, limit).map((r) => ({
+    id: r.id,
+    text: r.text,
+    source_uri: r.source_uri,
+    node_id: r.node_id,
+    score: r._rrfScore,
+    snippet: r.snippet,
+    confidence: r.confidence,
+    title: r.title,
+    section_path: r.section_path,
+  }));
+}
+
+/**
+ * Fuse N lists of HybridResult via RRF (D38, multi-query expansion).
+ *
+ * Generalizes the 2-list `rrfFuse` to arbitrary N lists. Each list
+ * assigns 1-based ranks; scores accumulate across all lists a result
+ * appears in.
+ */
+export function rrfFuseMulti(
+  lists: HybridResult[][],
+  rrfK: number,
+  limit: number
+): HybridResult[] {
+  const merged = new Map<string, HybridResult & { _rrfScore: number }>();
+
+  for (const list of lists) {
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      const rrfScore = 1 / (rrfK + (i + 1));
+      const existing = merged.get(r.id);
+      if (existing) {
+        existing._rrfScore += rrfScore;
+        if (r.snippet && !existing.snippet) existing.snippet = r.snippet;
+      } else {
+        merged.set(r.id, {
+          id: r.id,
+          text: r.text,
+          source_uri: r.source_uri,
+          node_id: r.node_id,
+          score: 0,
+          snippet: r.snippet,
+          confidence: r.confidence,
+          title: r.title ?? null,
+          section_path: r.section_path ?? '',
+          _rrfScore: rrfScore,
+        });
+      }
+    }
+  }
+
   const sorted = [...merged.values()].sort((a, b) => b._rrfScore - a._rrfScore);
 
   return sorted.slice(0, limit).map((r) => ({

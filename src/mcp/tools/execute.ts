@@ -18,36 +18,25 @@ import type { BindingDeps } from '../../sandbox/bindings/install.js';
  */
 
 const KG_EXECUTE_TYPES = `
+type Node = { id: string; source_uri: string; title: string | null; section_path: string };
+type Chunk = Node & { text: string; node_id: string };
 declare const kg: {
-  /** Substring search (backward compat). */
-  search(query: string): Array<{ id: string; text: string; source_uri: string }>;
-  /** Chunk lookup by id (backward compat). */
-  get(id: string): { id: string; text: string; source_uri: string } | null;
+  search(query: string): Chunk[];
+  get(id: string): Chunk | null;
   project: {
-    /** FTS5 full-text search with bm25 ranking. */
-    fts(query: string, opts?: { limit?: number }): Array<{ id: string; text: string; source_uri: string; node_id: string; rank: number; title: string | null; section_path: string }>;
-    /** Vector similarity search. Returns [] if no pre-computed embedding available. */
-    vec(query: string, opts?: { limit?: number }): Array<{ id: string; text: string; source_uri: string; node_id: string; distance: number; title: string | null; section_path: string }>;
-    /** Hybrid FTS + vector search with RRF fusion. Falls back to FTS-only if no embedding cached. */
-    hybrid(query: string, opts?: { limit?: number; rrf_k?: number }): Array<{ id: string; text: string; source_uri: string; node_id: string; score: number; snippet?: string; title: string | null; section_path: string }>;
-    /** Table of contents — list all nodes for LLM-driven browsing. Use this to scan titles, then get(id) to read specific sections. */
-    index(opts?: { kind?: string; source_uri?: string; limit?: number }): Array<{ id: string; title: string | null; source_uri: string; section_path: string; kind: string; token_count: number }>;
-    /** Node lookup by id — full section content. */
-    get(id: string): { id: string; source_uri: string; section_path: string; kind: string; title: string | null; content: string; token_count: number } | null;
-    /** K-hop graph traversal. */
-    neighbors(id: string, opts?: { depth?: number; edge_kinds?: string[] }): Array<{ id: string; source_uri: string; kind: string; title: string | null; depth: number }>;
-    log: {
-      /** Recent log entries. */
-      recent(n?: number, opts?: { kind?: string }): Array<{ id: number; ts: number; kind: string; source_uri: string | null; payload: unknown }>;
-    };
-    /** Concept gaps — topics mentioned ≥3 times with no dedicated wiki page. Check these to find what the wiki is missing, then write() to fill them. */
-    gaps(opts?: { resolved?: boolean }): Array<{ id: number; topic: string; first_seen_at: number; mentions_count: number; resolved_at: number | null }>;
-    /** Create or overwrite a wiki page. Path is relative to wiki root, .md extension enforced. */
+    fts(query: string, opts?: { limit?: number }): (Chunk & { rank: number })[];
+    vec(query: string, opts?: { limit?: number }): (Chunk & { distance: number })[];
+    hybrid(query: string, opts?: { limit?: number; rrf_k?: number }): (Chunk & { score: number; snippet?: string })[];
+    index(opts?: { kind?: string; source_uri?: string; limit?: number }): (Node & { kind: string; token_count: number })[];
+    get(id: string): (Node & { kind: string; content: string; token_count: number }) | null;
+    neighbors(id: string, opts?: { depth?: number; edge_kinds?: string[] }): (Node & { depth: number })[];
+    log: { recent(n?: number, opts?: { kind?: string }): Array<{ id: number; ts: number; kind: string; source_uri: string | null; payload: unknown }> };
+    gaps(opts?: { resolved?: boolean }): Array<{ id: number; topic: string; mentions_count: number; resolved_at: number | null }>;
     write(path: string, content: string): { path: string; bytes: number };
-    /** Append a timestamped entry to log.md. */
     append(entry: string): { path: string; bytes: number };
-    /** Delete a wiki page. Path is relative to wiki root. */
     remove(path: string): { path: string; removed: true };
+    pagerank(opts?: { limit?: number }): (Node & { score: number })[];
+    components(): Array<{ component_id: number; nodes: Node[] }>;
   };
 };
 declare const budget: { fit(items: unknown[], maxTokens?: number): unknown[] };
@@ -98,20 +87,13 @@ export const kgExecuteInputShape = {
 export const kgExecuteToolConfig = {
   title: 'Run JS in the knowledge-graph sandbox',
   description:
-    'Run a short JavaScript snippet inside the KG sandbox. The KG indexes a ' +
-    'curated markdown wiki of project knowledge (architecture decisions, ' +
-    'conventions, concepts) — not the source code. Use grep/read for source ' +
-    'files; use this for wiki content.\n\n' +
-    'Read: `kg.project.index()` to browse the wiki TOC, `kg.project.get(id)` for ' +
-    'full content, `kg.project.hybrid()` for search, `kg.project.neighbors()` ' +
-    'for graph traversal, `kg.project.log.recent()` for event log.\n\n' +
-    'Write: `kg.project.write(path, content)` to create/update wiki pages, ' +
-    '`kg.project.append(entry)` to add log entries, `kg.project.remove(path)` ' +
-    'to delete.\n\n' +
-    'Gaps: `kg.project.gaps()` returns concepts mentioned ≥3 times in the wiki ' +
-    'that have no dedicated page — use this to discover what knowledge is missing ' +
-    'and fill it with write().\n\n' +
-    '64MB memory cap, 2s default timeout. No network, no eval.\n\n' +
+    'Run JS in the KG sandbox. Indexes a curated project wiki (not source code).\n\n' +
+    'Read: index() for TOC, get(id) for content, hybrid() for search, ' +
+    'neighbors() for graph, pagerank() for hub nodes, components() for clusters.\n' +
+    'Write: write(path, content), append(entry), remove(path). ' +
+    'Use compiled-truth above --- and timeline below.\n' +
+    'Gaps: gaps() finds missing topics to fill with write().\n\n' +
+    '64MB memory, 2s timeout. No network/eval.\n\n' +
     KG_EXECUTE_TYPES,
   inputSchema: kgExecuteInputShape,
 } as const;

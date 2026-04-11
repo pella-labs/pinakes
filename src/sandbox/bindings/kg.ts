@@ -7,6 +7,7 @@ import type { Embedder } from '../../retrieval/embedder.js';
 import { ftsQuery as ftsQueryImpl } from '../../retrieval/fts.js';
 import { vecQuery as vecQueryImpl } from '../../retrieval/vec.js';
 import { rrfFuse } from '../../retrieval/hybrid.js';
+import { pagerank, connectedComponents } from '../../retrieval/graph.js';
 import { writeWikiFile, appendWikiLog, removeWikiFile, type WriteCounter } from './write.js';
 import { queryGaps } from '../../gaps/detector.js';
 import { errorMessage, marshalJsValue } from '../helpers.js';
@@ -161,6 +162,17 @@ function installScopeBindings(
   attachFn(context, scopeObj, 'gaps', (args) => {
     const opts = (args[0] ?? {}) as { resolved?: boolean };
     return queryGaps(reader, scope, opts);
+  });
+
+  // -- pagerank(opts?) — D40: PageRank scores based on wikilink graph -------
+  attachFn(context, scopeObj, 'pagerank', (args) => {
+    const opts = (args[0] ?? {}) as { iterations?: number; limit?: number; damping?: number };
+    return pagerank(reader, scope, opts);
+  });
+
+  // -- components(opts?) — D40: connected components in the wikilink graph --
+  attachFn(context, scopeObj, 'components', () => {
+    return connectedComponents(reader, scope);
   });
 
   // -- write(path, content) ----------------------------------------------

@@ -273,7 +273,7 @@ export class IngesterService {
       }
     }
 
-    // Step 6: transaction — delete-then-insert nodes/chunks/vec for this file
+    // Step 6: transaction — delete-then-insert nodes/chunks/vec/edges for this file
     const now = Date.now();
     const totalChunks = planned.reduce((acc, n) => acc + n.chunks.length, 0);
 
@@ -297,6 +297,21 @@ export class IngesterService {
       }
 
       // Delete old nodes for this file (cascades to chunks → FTS5 trigger fires).
+      // Also delete outbound edges from this file's nodes (edges don't cascade
+      // from kg_nodes FK — they reference src_id/dst_id without ON DELETE CASCADE
+      // on dst_id, so we delete src edges explicitly).
+      const oldNodeIds = w
+        .prepare<[string, string], { id: string }>(
+          `SELECT id FROM kg_nodes WHERE scope = ? AND source_uri = ?`
+        )
+        .all(this.scope, sourceUri)
+        .map((r) => r.id);
+
+      if (oldNodeIds.length > 0) {
+        const ph = oldNodeIds.map(() => '?').join(',');
+        w.prepare(`DELETE FROM kg_edges WHERE src_id IN (${ph})`).run(...oldNodeIds);
+      }
+
       w.prepare('DELETE FROM kg_nodes WHERE scope = ? AND source_uri = ?').run(
         this.scope,
         sourceUri
@@ -358,6 +373,24 @@ export class IngesterService {
           const vec = embeddings.get(chunk.id);
           if (vec) {
             insertVec.run(rowidBig, Buffer.from(vec.buffer));
+          }
+        }
+      }
+
+      // Step 6.5: wikilink edge extraction (D39)
+      // Scan each node's content for [[wikilinks]], resolve targets to
+      // existing node IDs, and insert edges. Unresolved links are silently
+      // skipped (gap detector already surfaces those).
+      const insertEdge = w.prepare(
+        `INSERT OR IGNORE INTO kg_edges (src_id, dst_id, edge_kind) VALUES (?, ?, 'wikilink')`
+      );
+
+      for (const node of planned) {
+        const links = extractWikilinks(node.section.content);
+        for (const linkTarget of links) {
+          const dstId = resolveWikilinkTarget(w, this.scope, linkTarget);
+          if (dstId && dstId !== node.nodeId) {
+            insertEdge.run(node.nodeId, dstId);
           }
         }
       }
@@ -494,6 +527,56 @@ function sha1(input: string): string {
  */
 export function freshManifest(): Manifest {
   return emptyManifest();
+}
+
+// ----------------------------------------------------------------------------
+// Wikilink extraction + resolution (D39)
+// ----------------------------------------------------------------------------
+
+/** Wikilink regex: [[term]] or [[term|display]] — reuses pattern from gaps/detector.ts */
+const WIKILINK_RE = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+
+/**
+ * Extract wikilink targets from markdown content.
+ * Returns deduplicated, normalized (trimmed, lowercase) link targets.
+ */
+export function extractWikilinks(content: string): string[] {
+  const targets = new Set<string>();
+  for (const m of content.matchAll(WIKILINK_RE)) {
+    const target = (m[1] ?? '').trim().toLowerCase();
+    if (target.length >= 1) targets.add(target);
+  }
+  return [...targets];
+}
+
+/**
+ * Resolve a wikilink target string to a node ID. Checks:
+ * 1. source_uri basename match (e.g. "auth" → "auth.md")
+ * 2. title match (case-insensitive)
+ *
+ * Returns the first matching node ID, or null if unresolved.
+ */
+function resolveWikilinkTarget(
+  w: BetterSqliteDatabase,
+  scope: string,
+  target: string
+): string | null {
+  // Try source_uri basename match: "auth" should match "auth.md" or "guides/auth.md"
+  // We match the last path component without .md extension.
+  const withMd = target.endsWith('.md') ? target : `${target}.md`;
+  const row = w
+    .prepare<[string, string, string, string], { id: string }>(
+      `SELECT id FROM kg_nodes
+       WHERE scope = ? AND (
+         source_uri = ? OR
+         source_uri LIKE ? OR
+         LOWER(title) = ?
+       )
+       LIMIT 1`
+    )
+    .get(scope, withMd, `%/${withMd}`, target);
+
+  return row?.id ?? null;
 }
 
 // re-export internal types for tests

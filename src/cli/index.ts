@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { auditCommand, renderAudit } from './audit.js';
+import { contradictionScanCommand } from './contradiction-cli.js';
 import { exportCommand, renderExport } from './export.js';
 import { importCommand, renderImport } from './import.js';
 import { purgeCommand, renderPurge } from './purge.js';
@@ -170,6 +171,29 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'contradiction-scan': {
+      const scope = (getString(flags, 'scope') ?? 'project') as 'project' | 'personal';
+      const result = await contradictionScanCommand({
+        scope,
+        wikiPath: getString(flags, 'wiki-path'),
+        dbPath: getString(flags, 'db-path'),
+      });
+      if (result.rate_limited) {
+        // eslint-disable-next-line no-console
+        console.log('Rate limited — last scan was less than 1 hour ago.');
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(
+          `Scanned ${result.scanned_pairs} pairs, found ${result.contradictions.length} contradictions.`
+        );
+        if (result.contradictions.length > 0) {
+          // eslint-disable-next-line no-console
+          console.log('Wrote contradictions.md to wiki root.');
+        }
+      }
+      break;
+    }
+
     case undefined:
     case 'help':
     case '-h':
@@ -184,7 +208,8 @@ Usage:
   kg audit   [--tail] [--n <count>] [--scope project|personal] [--db-path <path>]
   kg purge   --scope <project|personal> --confirm [--db-path <path>]
   kg export  --scope <project|personal> [--out file.json] [--db-path <path>]
-  kg import  --scope <project|personal> --in file.json [--db-path <path>]`);
+  kg import  --scope <project|personal> --in file.json [--db-path <path>]
+  kg contradiction-scan [--scope project|personal] [--wiki-path <dir>] [--db-path <path>]`);
       break;
     }
 

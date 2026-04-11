@@ -406,7 +406,9 @@ describe('Phase 6 integration', () => {
     expect(result.error).toBeUndefined();
     const arr = result.result as Array<{ source_uri: string; confidence: string }>;
     expect(arr.length).toBeGreaterThan(0);
-    expect(arr[0]!.source_uri).toMatch(/^file:\/\//);
+    // Project scope source_uri is a relative path (e.g. "info.md"), not a file:// URL.
+    // file:// URLs are only used for personal scope (see toStoredUri in manifest.ts).
+    expect(arr[0]!.source_uri).toBe('info.md');
     expect(arr[0]!.confidence).toBe('extracted');
   });
 
@@ -428,6 +430,7 @@ describe('Phase 6 integration', () => {
     expect(result.error).toBeUndefined();
     const node = result.result as { confidence: string; source_uri: string };
     expect(node.confidence).toBe('inferred');
-    expect(node.source_uri).toMatch(/^file:\/\//);
+    // Project scope source_uri is relative path, not file:// URL
+    expect(node.source_uri).toBe('inferred.md');
   });
 });
