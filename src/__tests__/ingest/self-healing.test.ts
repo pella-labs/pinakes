@@ -17,7 +17,7 @@ import {
 } from '../../ingest/manifest.js';
 
 /**
- * Self-healing tests for KG-MCP.
+ * Self-healing tests for Pinakes-MCP.
  *
  * These test the DB cross-validation in checkConsistency — the fix for the
  * scenario where the manifest claims a file is indexed but the DB has no rows
@@ -40,12 +40,12 @@ describe('self-healing: DB cross-validation in checkConsistency', () => {
 
   beforeEach(() => {
     __resetSingleFlightForTests();
-    const tmp = mkdtempSync(join(tmpdir(), 'kg-selfheal-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'pinakes-selfheal-'));
     const wikiDir = join(tmp, 'wiki');
     mkdirSync(wikiDir, { recursive: true });
     copyFileSync(join(FIXTURE_DIR, 'auth.md'), join(wikiDir, 'auth.md'));
 
-    const bundle = openDb(join(tmp, 'kg.db'));
+    const bundle = openDb(join(tmp, 'pinakes.db'));
     const ingester = new IngesterService(
       bundle,
       new CountingEmbedder(getDefaultEmbedder()),
@@ -82,8 +82,8 @@ describe('self-healing: DB cross-validation in checkConsistency', () => {
     // Now delete the DB rows (simulating DB recreation / migration drop).
     // Simulate DB loss: clear vec rows first (no FK cascade for virtual tables),
 // then nodes (cascades to chunks).
-c.bundle.writer.exec('DELETE FROM kg_chunks_vec');
-c.bundle.writer.exec('DELETE FROM kg_nodes');
+c.bundle.writer.exec('DELETE FROM pinakes_chunks_vec');
+c.bundle.writer.exec('DELETE FROM pinakes_nodes');
 
     // With DB cross-check: manifest says indexed, DB says empty → stale.
     const staleWithDb = checkConsistency(manifest, c.wikiDir, 'project', c.bundle.writer);
@@ -100,8 +100,8 @@ c.bundle.writer.exec('DELETE FROM kg_nodes');
     const manifest = readManifest(c.manifestPath);
     // Simulate DB loss: clear vec rows first (no FK cascade for virtual tables),
 // then nodes (cascades to chunks).
-c.bundle.writer.exec('DELETE FROM kg_chunks_vec');
-c.bundle.writer.exec('DELETE FROM kg_nodes');
+c.bundle.writer.exec('DELETE FROM pinakes_chunks_vec');
+c.bundle.writer.exec('DELETE FROM pinakes_nodes');
 
     // checkConsistency mutates the manifest — clears the entry for the stale file.
     checkConsistency(manifest, c.wikiDir, 'project', c.bundle.writer);
@@ -126,7 +126,7 @@ c.bundle.writer.exec('DELETE FROM kg_nodes');
 
     // Verify DB now has rows again.
     const count = c.bundle.writer
-      .prepare('SELECT COUNT(*) AS cnt FROM kg_nodes')
+      .prepare('SELECT COUNT(*) AS cnt FROM pinakes_nodes')
       .get() as { cnt: number };
     expect(count.cnt).toBeGreaterThan(0);
   });
@@ -155,19 +155,19 @@ c.bundle.writer.exec('DELETE FROM kg_nodes');
     const authUri = 'auth.md';
     const authRowids = c.bundle.writer
       .prepare(
-        `SELECT c.rowid AS rowid FROM kg_chunks c
-         JOIN kg_nodes n ON c.node_id = n.id
+        `SELECT c.rowid AS rowid FROM pinakes_chunks c
+         JOIN pinakes_nodes n ON c.node_id = n.id
          WHERE n.source_uri = ?`
       )
       .all(authUri) as Array<{ rowid: number }>;
     if (authRowids.length > 0) {
       const placeholders = authRowids.map(() => '?').join(',');
       c.bundle.writer
-        .prepare(`DELETE FROM kg_chunks_vec WHERE rowid IN (${placeholders})`)
+        .prepare(`DELETE FROM pinakes_chunks_vec WHERE rowid IN (${placeholders})`)
         .run(...authRowids.map((r) => r.rowid));
     }
     c.bundle.writer
-      .prepare('DELETE FROM kg_nodes WHERE source_uri = ?')
+      .prepare('DELETE FROM pinakes_nodes WHERE source_uri = ?')
       .run(authUri);
 
     // Only auth.md should be flagged as stale.
@@ -206,8 +206,8 @@ c.bundle.writer.exec('DELETE FROM kg_nodes');
     await c.ingester.ingestFile(path);
     // Simulate DB loss: clear vec rows first (no FK cascade for virtual tables),
 // then nodes (cascades to chunks).
-c.bundle.writer.exec('DELETE FROM kg_chunks_vec');
-c.bundle.writer.exec('DELETE FROM kg_nodes');
+c.bundle.writer.exec('DELETE FROM pinakes_chunks_vec');
+c.bundle.writer.exec('DELETE FROM pinakes_nodes');
 
     // Simulate what serve.ts startup does: reload manifest, check, re-ingest.
     c.ingester.reloadManifest();
@@ -226,7 +226,7 @@ c.bundle.writer.exec('DELETE FROM kg_nodes');
 
     // Verify DB has rows and they're queryable via FTS.
     const ftsResults = c.bundle.writer
-      .prepare("SELECT COUNT(*) AS cnt FROM kg_chunks_fts WHERE kg_chunks_fts MATCH 'auth'")
+      .prepare("SELECT COUNT(*) AS cnt FROM pinakes_chunks_fts WHERE pinakes_chunks_fts MATCH 'auth'")
       .get() as { cnt: number };
     expect(ftsResults.cnt).toBeGreaterThan(0);
   });

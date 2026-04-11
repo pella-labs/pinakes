@@ -23,8 +23,8 @@ describe('retrieval/graph (D40)', () => {
   let ctx: TestContext | null = null;
 
   beforeEach(() => {
-    const tmp = mkdtempSync(join(tmpdir(), 'kg-graph-'));
-    const bundle = openDb(join(tmp, 'kg.db'));
+    const tmp = mkdtempSync(join(tmpdir(), 'pinakes-graph-'));
+    const bundle = openDb(join(tmp, 'pinakes.db'));
     ctx = { tmp, bundle };
   });
 
@@ -40,7 +40,7 @@ describe('retrieval/graph (D40)', () => {
     const now = Date.now();
     ctx!.bundle.writer
       .prepare(
-        `INSERT INTO kg_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at, confidence)
+        `INSERT INTO pinakes_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at, confidence)
          VALUES (?, 'project', ?, '/', 'section', ?, '', 'sha', 0, ?, ?, ?, 'high')`
       )
       .run(id, sourceUri, title, now, now, now);
@@ -48,7 +48,7 @@ describe('retrieval/graph (D40)', () => {
 
   function insertEdge(srcId: string, dstId: string): void {
     ctx!.bundle.writer
-      .prepare(`INSERT OR IGNORE INTO kg_edges (src_id, dst_id, edge_kind) VALUES (?, ?, 'wikilink')`)
+      .prepare(`INSERT OR IGNORE INTO pinakes_edges (src_id, dst_id, edge_kind) VALUES (?, ?, 'wikilink')`)
       .run(srcId, dstId);
   }
 

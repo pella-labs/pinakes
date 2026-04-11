@@ -83,9 +83,9 @@ The main entry (`index.js`) imports `RpcTarget` from `cloudflare:workers` — a 
 | Function | Purpose | Upstream chunk file |
 |---|---|---|
 | `normalizeCode(code)` | Strip markdown fences, parse with acorn, wrap LLM output as async IIFE. Graceful fallback if parse fails. | `resolve-DIQRkRqQ.js` |
-| `sanitizeToolName(name)` | Convert tool names like `kg-search` to valid JS identifiers (`kg_search`), handle reserved words (`class` → `class_`), digit-leading (`123x` → `_123x`). | `json-schema-types-DoQ0VISs.js` |
+| `sanitizeToolName(name)` | Convert tool names like `pinakes-search` to valid JS identifiers (`pinakes_search`), handle reserved words (`class` → `class_`), digit-leading (`123x` → `_123x`). | `json-schema-types-DoQ0VISs.js` |
 | `jsonSchemaToType(schema, typeName)` | Convert a JSON Schema to a TypeScript `type` alias string. Handles `$ref`, `anyOf`/`oneOf`/`allOf`, `enum`, `const`, arrays (including tuples via `prefixItems`), objects, `additionalProperties`, OpenAPI `nullable`, and cycles via depth-limited traversal. | `json-schema-types-DoQ0VISs.js` |
-| `generateTypesFromJsonSchema(tools)` | Build the `declare const codemode: { ... }` block that we'll stuff into the `kg_execute` tool description so the LLM sees typed tool signatures. | `json-schema-types-DoQ0VISs.js` |
+| `generateTypesFromJsonSchema(tools)` | Build the `declare const codemode: { ... }` block that we'll stuff into the `execute` tool description so the LLM sees typed tool signatures. | `json-schema-types-DoQ0VISs.js` |
 
 Plus the private helpers they transitively need (`toPascalCase`, `escapeJsDoc`, `escapeStringLiteral`, `escapeControlChar`, `quoteProp`, `resolveRef`, `applyNullable`, `jsonSchemaToTypeString`, `extractJsonSchemaDescriptions`) and the 67-entry `JS_RESERVED` keyword set.
 

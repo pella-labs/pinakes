@@ -16,7 +16,7 @@ import {
 } from '../../ingest/manifest.js';
 
 /**
- * Manifest consistency check test for KG-MCP Phase 2.
+ * Manifest consistency check test for Pinakes Phase 2.
  *
  * One test, exercising the cold-start crash-recovery surface (PRD test #18):
  *
@@ -46,12 +46,12 @@ describe('ingest/manifest (Phase 2)', () => {
 
   beforeEach(() => {
     __resetSingleFlightForTests();
-    const tmp = mkdtempSync(join(tmpdir(), 'kg-manifest-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'pinakes-manifest-'));
     const wikiDir = join(tmp, 'wiki');
     mkdirSync(wikiDir, { recursive: true });
     copyFileSync(join(FIXTURE_DIR, 'auth.md'), join(wikiDir, 'auth.md'));
 
-    const bundle = openDb(join(tmp, 'kg.db'));
+    const bundle = openDb(join(tmp, 'pinakes.db'));
     const ingester = new IngesterService(
       bundle,
       new CountingEmbedder(getDefaultEmbedder()),
@@ -99,7 +99,7 @@ describe('ingest/manifest (Phase 2)', () => {
     expect(manifest2.files['auth.md']!.source_sha).toBe('a'.repeat(40));
 
     // Consistency check now reports the file as stale → it would be enqueued
-    // for re-ingest by `kg serve`'s startup check.
+    // for re-ingest by `pinakes serve`'s startup check.
     const stale2 = checkConsistency(manifest2, c.wikiDir, 'project');
     expect(stale2.length).toBe(1);
     expect(stale2[0]).toBe(resolve(path));

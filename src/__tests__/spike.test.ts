@@ -9,12 +9,12 @@ import { Repository } from '../db/repository.js';
 import { IngesterService, __resetSingleFlightForTests } from '../ingest/ingester.js';
 import { CountingEmbedder, getDefaultEmbedder } from '../retrieval/embedder.js';
 import { QuickJSExecutor } from '../sandbox/executor.js';
-import { makeKgSearchHandler } from '../mcp/tools/search.js';
-import { makeKgExecuteHandler } from '../mcp/tools/execute.js';
+import { makeSearchHandler } from '../mcp/tools/search.js';
+import { makeExecuteHandler } from '../mcp/tools/execute.js';
 import {
-  kgSearchToolConfig,
+  searchToolConfig,
 } from '../mcp/tools/search.js';
-import { kgExecuteToolConfig } from '../mcp/tools/execute.js';
+import { executeToolConfig } from '../mcp/tools/execute.js';
 import { countTokens } from '../gate/budget.js';
 
 /**
@@ -36,8 +36,8 @@ let bundle: DbBundle;
 let repository: Repository;
 let executor: QuickJSExecutor;
 let embedder: CountingEmbedder;
-let searchHandler: ReturnType<typeof makeKgSearchHandler>;
-let executeHandler: ReturnType<typeof makeKgExecuteHandler>;
+let searchHandler: ReturnType<typeof makeSearchHandler>;
+let executeHandler: ReturnType<typeof makeExecuteHandler>;
 let tmpRoot: string;
 
 beforeAll(async () => {
@@ -46,14 +46,14 @@ beforeAll(async () => {
   // Build a real Phase 2 stack: tmpdir → SQLite → ingest fixtures → Repository.
   // This replaces the Phase 1 in-memory MemoryStore with the production stack
   // while preserving every tool-surface assertion below.
-  tmpRoot = mkdtempSync(join(tmpdir(), 'kg-spike-tests-'));
+  tmpRoot = mkdtempSync(join(tmpdir(), 'pinakes-spike-tests-'));
   const wikiDir = join(tmpRoot, 'wiki');
   mkdirSync(wikiDir, { recursive: true });
   for (const name of readdirSync(FIXTURE_DIR)) {
     copyFileSync(join(FIXTURE_DIR, name), join(wikiDir, name));
   }
 
-  bundle = openDb(join(tmpRoot, 'kg.db'));
+  bundle = openDb(join(tmpRoot, 'pinakes.db'));
   embedder = new CountingEmbedder(getDefaultEmbedder());
   await embedder.warmup();
   const ingester = new IngesterService(bundle, embedder, 'project', wikiDir);
@@ -67,8 +67,8 @@ beforeAll(async () => {
 
   executor = new QuickJSExecutor();
   await executor.warmup();
-  searchHandler = makeKgSearchHandler({ repository, embedder, bundle });
-  executeHandler = makeKgExecuteHandler({ repository, executor, bundle, embedder });
+  searchHandler = makeSearchHandler({ repository, embedder, bundle });
+  executeHandler = makeExecuteHandler({ repository, executor, bundle, embedder });
 });
 
 afterAll(() => {
@@ -86,7 +86,7 @@ function parseResponse(response: { content: [{ type: 'text'; text: string }] }) 
   return { text, envelope: JSON.parse(text) };
 }
 
-describe('kg_search (PRD Phase 1)', () => {
+describe('search (PRD Phase 1)', () => {
   it('returns ≥1 result for hashPassword query (PRD #4)', async () => {
     const res = await searchHandler({ query: 'hashPassword' });
     const { envelope } = parseResponse(res);
@@ -117,10 +117,10 @@ describe('kg_search (PRD Phase 1)', () => {
   });
 });
 
-describe('kg_execute (PRD Phase 1)', () => {
-  it('runs `return kg.search("x").length` and returns the count (PRD #2)', async () => {
+describe('execute (PRD Phase 1)', () => {
+  it('runs `return pinakes.search("x").length` and returns the count (PRD #2)', async () => {
     const res = await executeHandler({
-      code: "return kg.search('hashPassword').length",
+      code: "return pinakes.search('hashPassword').length",
     });
     const { envelope } = parseResponse(res);
     const repoHits = repository.search('hashPassword', 'project').length;
@@ -128,9 +128,9 @@ describe('kg_execute (PRD Phase 1)', () => {
     expect(repoHits).toBeGreaterThanOrEqual(1);
   });
 
-  it('kg.search binding returns chunk shape with id/text/source_uri', async () => {
+  it('pinakes.search binding returns chunk shape with id/text/source_uri', async () => {
     const res = await executeHandler({
-      code: "return kg.search('bcrypt').slice(0, 3).map(h => h.id)",
+      code: "return pinakes.search('bcrypt').slice(0, 3).map(h => h.id)",
     });
     const { envelope } = parseResponse(res);
     expect(envelope.result).toBeInstanceOf(Array);
@@ -189,7 +189,7 @@ describe('PRD acceptance criteria #9 — sandbox cold-start p50 < 150ms', () => 
     for (let i = 0; i < 20; i++) {
       const freshExecutor = new QuickJSExecutor();
       await freshExecutor.warmup(); // module load excluded per PRD note
-      const freshHandler = makeKgExecuteHandler({ repository, executor: freshExecutor, bundle, embedder });
+      const freshHandler = makeExecuteHandler({ repository, executor: freshExecutor, bundle, embedder });
       const start = performance.now();
       await freshHandler({ code: 'return 1 + 1' });
       samples.push(performance.now() - start);
@@ -241,7 +241,7 @@ describe('tool schema footprint (CLAUDE.md §API Rules #2)', () => {
     // themselves aren't directly serializable, so we stringify the whole
     // config object which includes descriptions (the bulk of the tokens)
     // and parameter keys.
-    const serialize = (config: typeof kgSearchToolConfig | typeof kgExecuteToolConfig) => {
+    const serialize = (config: typeof searchToolConfig | typeof executeToolConfig) => {
       return JSON.stringify({
         title: config.title,
         description: config.description,
@@ -249,8 +249,8 @@ describe('tool schema footprint (CLAUDE.md §API Rules #2)', () => {
       });
     };
     const total =
-      countTokens(serialize(kgSearchToolConfig)) +
-      countTokens(serialize(kgExecuteToolConfig));
+      countTokens(serialize(searchToolConfig)) +
+      countTokens(serialize(executeToolConfig));
     console.error(`[schema footprint] total=${total} tokens (budget 1500)`);
     expect(total).toBeLessThan(1500);
   });

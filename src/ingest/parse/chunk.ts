@@ -1,7 +1,7 @@
 import { countTokens } from '../../gate/budget.js';
 
 /**
- * Paragraph-aware chunker for KG-MCP Phase 2.
+ * Paragraph-aware chunker for Pinakes Phase 2.
  *
  * Splits a section's body into chunks of approximately `targetTokens` tokens,
  * never breaking a paragraph in half. Tokens are counted via the existing

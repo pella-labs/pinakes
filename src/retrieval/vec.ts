@@ -7,8 +7,8 @@ import type { Embedder } from './embedder.js';
  *
  * The query embedding is computed on the fly by the caller-provided embedder.
  * The sqlite-vec `MATCH` operator performs an approximate nearest-neighbor
- * search against `kg_chunks_vec`, returning rowids + cosine distances.
- * We join back to `kg_chunks` + `kg_nodes` for the full result shape.
+ * search against `pinakes_chunks_vec`, returning rowids + cosine distances.
+ * We join back to `pinakes_chunks` + `pinakes_nodes` for the full result shape.
  *
  * **Graceful degradation**: if the vec table is empty or the embedder fails,
  * returns an empty array (never throws on query path).
@@ -56,9 +56,9 @@ export function vecQuery(
                 n.confidence AS confidence,
                 n.title AS title,
                 n.section_path AS section_path
-           FROM kg_chunks_vec v
-           JOIN kg_chunks c ON c.rowid = v.rowid
-           JOIN kg_nodes n ON c.node_id = n.id
+           FROM pinakes_chunks_vec v
+           JOIN pinakes_chunks c ON c.rowid = v.rowid
+           JOIN pinakes_nodes n ON c.node_id = n.id
           WHERE v.embedding MATCH ?
             AND k = ?
             AND n.scope = ?

@@ -12,20 +12,20 @@ import { buildEnvelope, QueryTimer, type Scope } from '../envelope.js';
 import { nextReader } from '../../db/client.js';
 
 /**
- * `kg_search` — fast-path hybrid search against the knowledge graph.
+ * `search` — fast-path hybrid search against the project knowledge base.
  *
  * Phase 5: supports all three scopes. For `scope='both'`, results from
- * both KGs are merged and tagged with `source_scope`.
+ * both knowledge bases are merged and tagged with `source_scope`.
  */
 
-export const kgSearchInputShape = {
+export const searchInputShape = {
   query: z
     .string()
     .min(1)
     .describe(
-      'The search term. Hybrid FTS5 + vector search against every indexed ' +
-        'chunk of the wiki, ranked by Reciprocal Rank Fusion. ' +
-        'Examples: "hashPassword", "bcrypt", "auth flow".'
+      'Natural language or keyword query. Semantic search finds relevant ' +
+        'knowledge even with different wording. ' +
+        'Examples: "how does auth work", "database design decisions", "error handling conventions".'
     ),
   max_tokens: z
     .number()
@@ -43,9 +43,8 @@ export const kgSearchInputShape = {
     .enum(['project', 'personal', 'both'])
     .optional()
     .describe(
-      'Which KG to query. "project" (default) searches the project wiki, ' +
-        '"personal" searches the personal wiki, "both" merges results from ' +
-        'both with `source_scope` tagging on each result.'
+      'Which knowledge base to query. "project" (default) = this project\'s knowledge, ' +
+        '"personal" = your cross-project notes, "both" = merged with source tagging.'
     ),
   expand: z
     .boolean()
@@ -58,19 +57,21 @@ export const kgSearchInputShape = {
     ),
 };
 
-export const kgSearchToolConfig = {
-  title: 'Search the knowledge graph',
+export const searchToolConfig = {
+  title: 'Search project knowledge base',
   description:
-    'Hybrid FTS + vector search the curated project knowledge wiki (not source ' +
-    'code — use grep/read for that). Best for conceptual questions about ' +
-    'architecture, conventions, and decisions. Results are ranked by Reciprocal ' +
-    'Rank Fusion with `title` and `section_path` for quick triage. ' +
-    'Prefer this for short lookups; use `kg_execute` when you need to chain ' +
-    'filters, browse the wiki index, write new pages, or check knowledge gaps.',
-  inputSchema: kgSearchInputShape,
+    'START HERE when you need to understand the project — architecture, ' +
+    'conventions, decisions, requirements, data models, deployment, or how ' +
+    'subsystems relate. Returns distilled knowledge at a fraction of the tokens ' +
+    'vs. reading raw source files. Semantic hybrid search (FTS5 + vector) finds ' +
+    'relevant context even when you don\'t know exact terms. Results ranked by ' +
+    'relevance with `title` and `section_path` for quick triage. ' +
+    'Use `execute` for advanced queries: chaining filters, browsing the full ' +
+    'index, writing new knowledge, or checking knowledge gaps.',
+  inputSchema: searchInputShape,
 } as const;
 
-export interface KgSearchDeps {
+export interface SearchDeps {
   repository: Repository;
   embedder: Embedder;
   bundle: DbBundle;
@@ -90,9 +91,9 @@ interface TaggedResult {
 }
 
 /**
- * Build the `kg_search` handler. Supports project, personal, and both scopes.
+ * Build the `search` handler. Supports project, personal, and both scopes.
  */
-export function makeKgSearchHandler(deps: KgSearchDeps) {
+export function makeSearchHandler(deps: SearchDeps) {
   return async (args: {
     query: string;
     max_tokens?: number;
@@ -109,8 +110,8 @@ export function makeKgSearchHandler(deps: KgSearchDeps) {
       const envelope = buildEnvelope({
         result: {
           error:
-            'personal scope requested but no personal KG is configured — ' +
-            'set KG_PROFILE_PATH or pass --profile-path',
+            'personal scope requested but no personal wiki is configured — ' +
+            'create a personal wiki at ~/.pinakes/wiki/ or pass --profile-path',
         },
         tokensBudgeted: maxTokens,
         tokensUsed: 0,

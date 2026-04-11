@@ -46,7 +46,7 @@ export async function contradictionScan(
   // Rate limit check
   const lastScan = bundle.writer
     .prepare<[string], { value: string }>(
-      `SELECT value FROM kg_meta WHERE key = ?`
+      `SELECT value FROM pinakes_meta WHERE key = ?`
     )
     .get('last_contradiction_scan');
 
@@ -60,7 +60,7 @@ export async function contradictionScan(
   if (!llmProvider.available()) {
     throw new Error(
       'No LLM provider available for contradiction detection. ' +
-        'Set KG_OLLAMA_URL, ANTHROPIC_API_KEY, or OPENAI_API_KEY, ' +
+        'Set PINAKES_OLLAMA_URL, ANTHROPIC_API_KEY, or OPENAI_API_KEY, ' +
         'or install the claude/codex CLI.'
     );
   }
@@ -97,7 +97,7 @@ export async function contradictionScan(
   // Update rate limit timestamp
   bundle.writer
     .prepare(
-      `INSERT OR REPLACE INTO kg_meta (key, value) VALUES ('last_contradiction_scan', ?)`
+      `INSERT OR REPLACE INTO pinakes_meta (key, value) VALUES ('last_contradiction_scan', ?)`
     )
     .run(String(Date.now()));
 
@@ -134,8 +134,8 @@ function findCandidatePairs(bundle: DbBundle, scope: string): CandidatePair[] {
   const chunks = bundle.writer
     .prepare<[string], { id: string; source_uri: string; text: string; rowid: number }>(
       `SELECT c.id, n.source_uri, c.text, c.rowid
-       FROM kg_chunks c
-       JOIN kg_nodes n ON c.node_id = n.id
+       FROM pinakes_chunks c
+       JOIN pinakes_nodes n ON c.node_id = n.id
        WHERE n.scope = ?
        ORDER BY c.rowid`
     )
@@ -153,8 +153,8 @@ function findCandidatePairs(bundle: DbBundle, scope: string): CandidatePair[] {
     const similar = bundle.writer
       .prepare<[number, number], { rowid: number; distance: number }>(
         `SELECT rowid, distance
-         FROM kg_chunks_vec
-         WHERE embedding MATCH (SELECT embedding FROM kg_chunks_vec WHERE rowid = ?)
+         FROM pinakes_chunks_vec
+         WHERE embedding MATCH (SELECT embedding FROM pinakes_chunks_vec WHERE rowid = ?)
          AND k = ?
          ORDER BY distance`
       )
@@ -245,7 +245,7 @@ function writeContradictionReport(
   try {
     bundle.writer
       .prepare(
-        `INSERT INTO kg_log (ts, scope, kind, source_uri, payload)
+        `INSERT INTO pinakes_log (ts, scope, kind, source_uri, payload)
          VALUES (?, ?, 'contradiction:scan', NULL, ?)`
       )
       .run(

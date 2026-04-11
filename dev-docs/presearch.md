@@ -1,4 +1,4 @@
-# KG-MCP — Pre-Implementation Research Document
+# Pinakes — Pre-Implementation Research Document
 
 > **Project**: a standalone code-mode MCP server that manages a two-level Karpathy knowledge wiki (project + personal) with full read/write lifecycle. Works with any MCP client: Claude Code, Codex, Goose, OpenCode, Cursor.
 >
@@ -13,14 +13,14 @@
 ## TL;DR
 
 A local stdio MCP server, written in TypeScript, that:
-1. Indexes markdown knowledge-wiki files (project `.kg/wiki/` + personal `~/.kg/wiki/`) into SQLite with FTS5 + sqlite-vec.
-2. Exposes exactly two MCP tools — `kg_search` and `kg_execute` — to the coding LLM.
-3. `kg_execute` runs LLM-written JavaScript in a sandboxed QuickJS environment with `kg.project` and (optionally, scope-gated) `kg.personal` bindings. This is Cloudflare's code-mode pattern applied to a local knowledge graph.
+1. Indexes markdown knowledge-wiki files (project `.pinakes/wiki/` + personal `~/.pinakes/wiki/`) into SQLite with FTS5 + sqlite-vec.
+2. Exposes exactly two MCP tools — `search` and `execute` — to the coding LLM.
+3. `execute` runs LLM-written JavaScript in a sandboxed QuickJS environment with `pinakes.project` and (optionally, scope-gated) `pinakes.personal` bindings. This is Cloudflare's code-mode pattern applied to a local knowledge graph.
 4. Every response is budget-shaped to fit under Claude Code's **hard 25,000-token MCP tool response cap**, with a 10% safety margin.
 5. Reuses `@cloudflare/codemode`'s pluggable `Executor` interface, so we only write ~300 LOC of Node-side sandbox code, not the whole code-mode layer.
 6. Ships with a bundled local embedder (`@xenova/transformers` + quantized MiniLM-L6-v2). Opt-in upgrades to Ollama `nomic-embed-text` or Voyage `voyage-code-3`.
-7. Enforces a structural privacy invariant at the tool dispatcher layer — the sandbox physically does not receive a `kg.personal` binding unless the caller's `scope` param includes `'personal'`.
-8. Owns the write path: `kg.project.write(path, content)` inside `kg_execute` writes markdown to disk (atomic rename), chokidar triggers re-indexing. Safety constraints: path containment, `.md` only, 100KB max, 20 writes/call, audit-logged.
+7. Enforces a structural privacy invariant at the tool dispatcher layer — the sandbox physically does not receive a `pinakes.personal` binding unless the caller's `scope` param includes `'personal'`.
+8. Owns the write path: `pinakes.project.write(path, content)` inside `execute` writes markdown to disk (atomic rename), chokidar triggers re-indexing. Safety constraints: path containment, `.md` only, 100KB max, 20 writes/call, audit-logged.
 
 **Markdown is canonical. SQLite is the index.** If the index is lost, we rebuild from markdown. If markdown is lost, we have a bug.
 
@@ -60,9 +60,9 @@ See `dev-docs/research-brief.md` for the full sourced findings. Summary of decis
 2. "Has this developer hit this kind of problem before?" — cross-project personal KG retrieval.
 3. "What was decided about auth in this repo?" — targeted architecture/decision lookup.
 4. "Where are the gaps?" — Karpathy lint query surface.
-5. "Log this new finding" — LLM writes via `kg.project.write()` or `kg.project.append()` (markdown canonical invariant preserved).
+5. "Log this new finding" — LLM writes via `pinakes.project.write()` or `pinakes.project.append()` (markdown canonical invariant preserved).
 
-**Scope boundary**: we own the full lifecycle: READ, WRITE, INDEX, QUERY, and GAP-DETECT. Write operations via `kg.project.write()` inside `kg_execute` (see D35).
+**Scope boundary**: we own the full lifecycle: READ, WRITE, INDEX, QUERY, and GAP-DETECT. Write operations via `pinakes.project.write()` inside `execute` (see D35).
 
 ### 1.2 Scale & performance (LOCKED)
 
@@ -95,14 +95,14 @@ We trade nothing for money. Default stack is local + free.
 
 | Milestone | When | Scope |
 |---|---|---|
-| **Feasibility spike** | **Today** | stdio MCP + minimal `kg_search` + `kg_execute` with QuickJS sandbox + budget gate + in-memory store. **Includes code-mode path** (omitting it invalidates the feasibility test). |
+| **Feasibility spike** | **Today** | stdio MCP + minimal `search` + `execute` with QuickJS sandbox + budget gate + in-memory store. **Includes code-mode path** (omitting it invalidates the feasibility test). |
 | **MVP** | Aligned with Pharos Phase 4 cutover | full SQLite schema, chokidar ingestion, hybrid RRF retrieval, both KGs with privacy invariant, provenance tags, read-only gap detection |
 | **v1** | Pharos v1 | gap-fill writer loop (closes Karpathy lint), time-travel queries, tree-sitter code parser, multi-language symbol extraction |
 
 ### 1.5 Data sensitivity (LOCKED)
 
-- **Project KG**: lives in `.pharos/wiki/`. User's source code metadata and decisions. Can be .gitignored or committed.
-- **Personal KG**: lives in `~/.pharos/profile/`. Cross-project developer learnings. **Never leaves machine** by default. Embedding API opt-in is per-KG, not global.
+- **Project KG**: lives in `.pinakes/wiki/`. User's source code metadata and decisions. Can be .gitignored or committed.
+- **Personal KG**: lives in `~/.pinakes/wiki/`. Cross-project developer learnings. **Never leaves machine** by default. Embedding API opt-in is per-KG, not global.
 - **Prompt injection surface**: ingested wiki content is treated as untrusted data. Sandbox has no `eval`/`Function`/`fetch`/`require`, so ingested text cannot execute.
 - **No PII, compliance, or data residency requirements.** Single-user local tool.
 
@@ -114,7 +114,7 @@ TypeScript / Node / SQLite comfortable. MCP / QuickJS / Cloudflare code-mode new
 
 - **Non-negotiable**: privacy invariant. Enforced at tool dispatcher, audited on every call, tested adversarially.
 - **Budget compliance**: 100%. Never emit a response >25K tokens.
-- **Audit logging**: every MCP call → `kg_audit` table + `.pharos/kg-audit.jsonl` mirror.
+- **Audit logging**: every MCP call → `pinakes_audit` table + `.pinakes/audit.jsonl` mirror.
 
 ### 1.8 Testable proxy metrics for MVP
 
@@ -135,9 +135,9 @@ After self-critique cut the original 12 candidates down to the 7 that are actual
 |---|---|---|---|
 | **A** | **Code-mode native KG API** | Novel AI Application | The core thesis. LLM writes JS, filters and projects locally, returns only what fits the budget. Cloudflare validated the pattern at ~81% token reduction. |
 | **B** | **Budget-shaped response primitive** | UX Excellence | Every response counts tokens and truncates to fit under the 25K cap. Novel in MCP space because the cap is new. Never surfaces an "exceeds max" error to the caller. |
-| **C** | **Structural privacy binding** | Production Hardening | `kg.personal` binding physically injected into the sandbox ONLY when scope includes `'personal'`. Enforced at dispatcher, audited. Unbypassable via prompt injection because the binding doesn't exist for project-scoped calls. |
+| **C** | **Structural privacy binding** | Production Hardening | `pinakes.personal` binding physically injected into the sandbox ONLY when scope includes `'personal'`. Enforced at dispatcher, audited. Unbypassable via prompt injection because the binding doesn't exist for project-scoped calls. |
 | **D** | **Provenance-tagged claims** | Production Hardening | Every node carries `confidence ∈ {extracted, inferred, ambiguous}` + source_uri. LLM can filter by confidence via code-mode. Borrowed from Ar9av/obsidian-wiki. |
-| **E** | **Gap detection (read-only)** | Novel AI Application | Karpathy's lint workflow, materialized. MVP detects and exposes via `kg.gaps()`. v1 closes the writer feedback loop. |
+| **E** | **Gap detection (read-only)** | Novel AI Application | Karpathy's lint workflow, materialized. MVP detects and exposes via `pinakes.gaps()`. v1 closes the writer feedback loop. |
 
 ### STRETCH (v1 if time permits)
 
@@ -148,7 +148,7 @@ After self-critique cut the original 12 candidates down to the 7 that are actual
 
 ### Rejected as "innovations" (moved to tech choices / baseline)
 
-- LLM-driven cross-KG discovery → table stakes, it's the `kg.describe()` tool
+- LLM-driven cross-KG discovery → table stakes, it's the `pinakes.describe()` tool
 - Token-counting metadata → obvious instrumentation
 - Ollama-first embedding → tech choice
 - Hybrid RRF → tech choice (canonical sqlite-vec pattern)
@@ -186,7 +186,7 @@ After self-critique cut the original 12 candidates down to the 7 that are actual
                                ┌─────────────────────────┐
                                │  QuickJS sandbox        │
                                │  + @cloudflare/codemode │
-                               │  + kg bindings          │
+                               │  + pinakes bindings     │
                                └─────────────────────────┘
                                             │
                                             ▼
@@ -223,17 +223,17 @@ After self-critique cut the original 12 candidates down to the 7 that are actual
 
 ### 2.3 Data architecture
 
-**SQLite database**: `<projectDir>/.pharos/pharos.db` (shared with Pharos's other tables), plus `~/.pharos/profile/kg.db` for personal KG.
+**SQLite database**: `<projectDir>/.pinakes/pinakes.db`, plus `~/.pinakes/pinakes.db` for personal KG.
 
 **Tables** (Drizzle schema; 8 total):
-- `kg_nodes` — entity / section / concept / decision / log_entry / gap; deterministic id = sha1(scope + uri + section)
-- `kg_edges` — src/dst + edge_kind (wikilink | cites | supersedes | contradicts | mentions | derived_from)
-- `kg_chunks` — paragraph-level splits of nodes with token_count
-- `kg_chunks_fts` — FTS5 virtual table over chunks (external content, `unicode61 remove_diacritics 2`, NOT trigram)
-- `kg_chunks_vec` — sqlite-vec virtual table, `FLOAT[384]` (MiniLM dims; swappable)
-- `kg_log` — append-only event log (materialized Karpathy log.md)
-- `kg_gaps` — detected concept gaps with first_seen_at, mentions_count, resolved_at
-- `kg_audit` — every tool call, for privacy invariant verification
+- `pinakes_nodes` — entity / section / concept / decision / log_entry / gap; deterministic id = sha1(scope + uri + section)
+- `pinakes_edges` — src/dst + edge_kind (wikilink | cites | supersedes | contradicts | mentions | derived_from)
+- `pinakes_chunks` — paragraph-level splits of nodes with token_count
+- `pinakes_chunks_fts` — FTS5 virtual table over chunks (external content, `unicode61 remove_diacritics 2`, NOT trigram)
+- `pinakes_chunks_vec` — sqlite-vec virtual table, `FLOAT[384]` (MiniLM dims; swappable)
+- `pinakes_log` — append-only event log (materialized Karpathy log.md)
+- `pinakes_gaps` — detected concept gaps with first_seen_at, mentions_count, resolved_at
+- `pinakes_audit` — every tool call, for privacy invariant verification
 
 Full DDL in the Loop 2 notes; extends Pharos's existing Drizzle schema via drizzle-kit migrations.
 
@@ -266,16 +266,16 @@ One process, sub-components:
 
 ### 2.5 API + integration
 
-**External MCP surface**: exactly 2 tools, `kg_search` + `kg_execute`. Total schema footprint target <1500 tokens (cf. Cloudflare's 1K-token claim for 2500 endpoints).
+**External MCP surface**: exactly 2 tools, `search` + `execute`. Total schema footprint target <1500 tokens (cf. Cloudflare's 1K-token claim for 2500 endpoints).
 
-**`kg_search`**: fast path for simple lookups. Params: `query`, `scope` (project | personal | both, default project), `max_tokens` (default 5000, max 20000), `node_kinds` (optional filter).
+**`search`**: fast path for simple lookups. Params: `query`, `scope` (project | personal | both, default project), `max_tokens` (default 5000, max 20000), `node_kinds` (optional filter).
 
-**`kg_execute`**: code-mode path. Params: `code` (JS string), `scope`, `max_tokens`, `timeout_ms` (default 2000, max 10000).
+**`execute`**: code-mode path. Params: `code` (JS string), `scope`, `max_tokens`, `timeout_ms` (default 2000, max 10000).
 
-**Sandbox environment** (what the LLM writes against inside `kg_execute`):
+**Sandbox environment** (what the LLM writes against inside `execute`):
 
 ```typescript
-declare const kg: {
+declare const pinakes: {
   project: KGSide;
   personal?: KGSide;  // undefined unless scope includes 'personal'
   describe(): {
@@ -352,8 +352,8 @@ Tool descriptions ARE the prompt. Target <1000 tokens combined.
 ### 2.8 Observability
 
 - Structured JSON logs via pino to stderr (MCP spec allows stderr for logs)
-- In-process metrics dumped on SIGHUP: `kg_queries_total`, `kg_query_latency_ms{p50,p95,p99}`, `kg_response_tokens`, `kg_budget_truncations_total`, `kg_sandbox_spawns_total`, `kg_sandbox_timeouts_total`, `kg_ingest_files_total`, `kg_stale_files_total`
-- `kg_audit` table + `.pharos/kg-audit.jsonl` mirror
+- In-process metrics dumped on SIGHUP: `pinakes_queries_total`, `pinakes_query_latency_ms{p50,p95,p99}`, `pinakes_response_tokens`, `pinakes_budget_truncations_total`, `pinakes_sandbox_spawns_total`, `pinakes_sandbox_timeouts_total`, `pinakes_ingest_files_total`, `pinakes_stale_files_total`
+- `pinakes_audit` table + `.pinakes/audit.jsonl` mirror
 - No distributed tracing
 
 ### 2.9 Testing (≥80 tests total before MVP merge)
@@ -393,8 +393,8 @@ See conversation record for the full table. Highlights:
 - **F3 (prompt injection via wiki content)** → sandbox denies code exec; provenance/confidence tags bound blast radius.
 - **F4 (QuickJS CVE)** → pin + monitor; fallback plan to Deno subprocess sandbox.
 - **F5 (chokidar missed event)** → reuse Pharos's 30-second sanity scan pattern from their eval-13.
-- **F9 (sqlite-vec breaking change)** → schema version stamp in `kg_meta`; rebuild-from-markdown recovery.
-- **F10 (SQLite corruption)** → markdown canonical; `kg-mcp rebuild` CLI recovers in ~30s.
+- **F9 (sqlite-vec breaking change)** → schema version stamp in `pinakes_meta`; rebuild-from-markdown recovery.
+- **F10 (SQLite corruption)** → markdown canonical; `pinakes rebuild` CLI recovers in ~30s.
 - **F11 (infinite loop)** → QuickJS `shouldInterruptAfterDeadline` with `timeout_ms` param.
 - **F12 (sandbox OOM)** → QuickJS `setMemoryLimit(64 * 1024 * 1024)` — hard WASM cap.
 - **F17 (graph explosion)** → per-file node cap (500) with configurable override.
@@ -437,7 +437,7 @@ Worst-case single-user cost with paid embedding: ~$2/month. Realistic: $0.
 
 **Biggest technical risk**: QuickJS warm-pool cold-start perf. If >200ms, p95 target breaks. Measured in Phase 1 spike.
 
-**Fallback**: drop code-mode, ship classic fine-grained tools (`kg_fts`, `kg_vec`, `kg_get`, `kg_neighbors`), accept the token cost, add code-mode in MVP+1.
+**Fallback**: drop code-mode, ship classic fine-grained tools (`pinakes_fts`, `pinakes_vec`, `pinakes_get`, `pinakes_neighbors`), accept the token cost, add code-mode in MVP+1.
 
 ---
 
@@ -448,7 +448,7 @@ Summary — see `PRD.md` for the detailed breakdown with acceptance criteria and
 | Phase | Goal | Effort | Deps |
 |---|---|---|---|
 | 0 | Scaffold + prior art study | ½ day | — |
-| 1 | **Spike (TODAY)** — stdio MCP + minimal kg_search + kg_execute + QuickJS + budget gate | ½-1 day | P0 |
+| 1 | **Spike (TODAY)** — stdio MCP + minimal search + execute + QuickJS + budget gate | ½-1 day | P0 |
 | 2 | Persistence + ingestion (full schema, chokidar, idempotent upsert) | 1-2 days | P1 |
 | 3 | Sandbox + code-mode bindings (full env, adversarial hardening) | 2 days | P2 |
 | 4 | Hybrid retrieval + budget gate (FTS5 + vec + RRF, server-side truncation) | 2 days | P3 |
@@ -476,7 +476,7 @@ Summary — see `PRD.md` for the detailed breakdown with acceptance criteria and
 | P2 | G2: token-count estimation error | 10% safety margin — `internal_budget = floor(max_tokens * 0.9)` | P4 |
 | P3 | G3: concurrent tool calls | Warm pool N=2 + semaphore | P3 |
 | P4 | G4: sandbox crash recovery | Catch → dispose → respawn → structured error | P3 |
-| P5 | G6: no backup/export/purge | `kg-mcp purge | export | import` CLI | P7 |
+| P5 | G6: no backup/export/purge | `pinakes purge | export | import` CLI | P7 |
 | P6 | G7: single-upstream code-mode dep | Document vendoring fallback | CLAUDE.md |
 | P7 | G11: Goose registration unverified | Phase 1 acceptance includes both `claude mcp add` and Goose-native | P1 |
 | P8 | G10: embedder quality unproven | Phase 4 exit criterion: hit rate ≥70% on fixture; fallback to Ollama nomic | P4 |
@@ -508,15 +508,15 @@ Summary — see `PRD.md` for the detailed breakdown with acceptance criteria and
 | D4 | Ingest from orchestrator queue (TBD) with chokidar stub | User Q&A 4 | Loop 2 §2.5 (IngestSource) |
 | D5 | Feasibility spike required TODAY | User Q&A "timeline" | Loop 1 §1.4, Loop 4 P1 |
 | D6 | Local-default embeddings, config for API upgrades | User Q&A "embeddings" | Loop 1 §1.3, Loop 2 §2.7 |
-| D7 | ~~Pharos is the parent app; KG-MCP is the v1 wiki-query layer~~ **Superseded by D35** — now standalone | Reading Pharos PRESEARCH.md | Preamble |
+| D7 | ~~Pharos is the parent app; Pinakes is the v1 wiki-query layer~~ **Superseded by D35** — now standalone | Reading Pharos PRESEARCH.md | Preamble |
 | D8 | Markdown canonical, SQLite index | Loop 0 + design judgment | Loop 2 §2.3 |
 | D9 | QuickJS sandbox (vs isolated-vm) | Loop 0 research + self-critique | Loop 2 §2.2 |
 | D10 | Reuse `@cloudflare/codemode` Executor interface | Loop 0 research | Loop 2 §2.2 |
 | D11 | Response budget gate server-side with 10% safety margin | Loop 6 patch P2 | Loop 2 §2.10 |
 | D12 | Warm sandbox pool N=2 + semaphore | Loop 6 patch P3 | Loop 2 §2.4 |
 | D13 | Bundled transformers.js default; Ollama/Voyage upgrade path | Loop 1 self-critique | Loop 2 §2.7 |
-| D14 | 2-tool MCP surface (`kg_search` + `kg_execute`) | Loop 2 | Loop 2 §2.5 |
-| D15 | `scope` param on every tool call; `kg.personal` binding dispatcher-gated | Loop 2 | Loop 2 §2.5, §2.10 |
+| D14 | 2-tool MCP surface (`search` + `execute`) | Loop 2 | Loop 2 §2.5 |
+| D15 | `scope` param on every tool call; `pinakes.personal` binding dispatcher-gated | Loop 2 | Loop 2 §2.5, §2.10 |
 | D16 | 5 CORE innovations, 2 STRETCH after self-critique | Loop 1.5 self-critique | Loop 1.5 |
 | D17 | MVP has read-only gap detection; writer loop is v1 | Loop 6 R2/R3 Medium confidence | Loop 4 P6/P8 |
 | D18 | Pin SQLite 3.50.4 OR 3.51.3+ (FTS5 regression) | Loop 0 research | Loop 2 §2.2 |
@@ -529,7 +529,7 @@ Summary — see `PRD.md` for the detailed breakdown with acceptance criteria and
 | OQ1 | MCP client registration flow — `claude mcp add`, Goose config, Cursor MCP config, etc. | Phase 7 (docs) |
 | OQ2 | Optional orchestrator message-queue integration (e.g. Pharos Redis pub/sub) | Optional — ChokidarWatcher is sufficient for standalone |
 | ~~OQ3~~ | ~~Wiki updater proposals file protocol~~ | **Dissolved by D35** — write path is self-contained |
-| ~~OQ4~~ | ~~Extend pharos.db or separate file?~~ | **Dissolved by D35** — standalone `.kg/kg.db` |
+| ~~OQ4~~ | ~~Extend pharos.db or separate file?~~ | **Dissolved by D35** — standalone `.pinakes/pinakes.db` |
 | ~~OQ5~~ | ~~Pharos settings UI for API keys~~ | **Dissolved by D35** — env vars only, client-agnostic |
 
 ---
@@ -540,16 +540,16 @@ Summary — see `PRD.md` for the detailed breakdown with acceptance criteria and
 
 ### A1 — Audit log privacy leak (CRITICAL)
 
-**Original**: single `.pharos/kg-audit.jsonl` mirror for all scopes.
+**Original**: single `.pinakes/audit.jsonl` mirror for all scopes.
 
-**Problem**: `.pharos/kg-audit.jsonl` lives inside the user's project repo. A query with `scope='personal'` logs the query text + snippet into a path that `git add .` commits. **This is a privacy leak that would ship.**
+**Problem**: `.pinakes/audit.jsonl` lives inside the user's project repo. A query with `scope='personal'` logs the query text + snippet into a path that `git add .` commits. **This is a privacy leak that would ship.**
 
 **Patch (applied to §2.8, §3.2, and CLAUDE.md)**:
 - **Split audit mirrors by scope**:
-  - `scope='project'` → `.pharos/kg-audit.jsonl` (repo-local, safe to commit)
-  - `scope='personal'` OR `scope='both'` → `~/.pharos/profile/kg-audit.jsonl` (home dir only)
-- **Split SQLite audit tables too**: `kg_audit` in `pharos.db` is project-scoped; personal-scope rows go to `kg_audit` in `~/.pharos/profile/kg.db`. Never mix.
-- Merge-blocker test: a `scope='personal'` call must leave zero bytes in `.pharos/kg-audit.jsonl` and must append to `~/.pharos/profile/kg-audit.jsonl`.
+  - `scope='project'` → `.pinakes/audit.jsonl` (repo-local, safe to commit)
+  - `scope='personal'` OR `scope='both'` → `~/.pinakes/audit.jsonl` (home dir only)
+- **Split SQLite audit tables too**: `pinakes_audit` in `pinakes.db` is project-scoped; personal-scope rows go to `pinakes_audit` in `~/.pinakes/pinakes.db`. Never mix.
+- Merge-blocker test: a `scope='personal'` call must leave zero bytes in `.pinakes/audit.jsonl` and must append to `~/.pinakes/audit.jsonl`.
 
 ### A2 — Personal KG unbounded at cross-project scale (CRITICAL)
 
@@ -559,10 +559,10 @@ Summary — see `PRD.md` for the detailed breakdown with acceptance criteria and
 
 **Patch (applied to §1.2, §2.3, and PRD.md Phase 5)**:
 - **Hard cap personal KG at 5,000 chunks** with LRU eviction on `last_accessed_at`.
-- Add `last_accessed_at INTEGER NOT NULL` to `kg_nodes`; bump on every read that returns that node.
+- Add `last_accessed_at INTEGER NOT NULL` to `pinakes_nodes`; bump on every read that returns that node.
 - On personal-KG ingest, if chunk count >5000 after insert, evict the oldest-accessed nodes (cascades to chunks/edges/vectors) until under cap.
 - Project KG has no cap — it's bounded by the repo's wiki files.
-- Eviction logged to `kg_log` for audit.
+- Eviction logged to `pinakes_log` for audit.
 
 **Alternative considered and rejected**: topic partitioning (per-language/framework shards). Added complexity for marginal win at our scale; revisit in v1 if LRU eviction produces observable quality loss.
 
@@ -579,7 +579,7 @@ Summary — see `PRD.md` for the detailed breakdown with acceptance criteria and
   - `available_for_results = floor((max_tokens - envelope_reserve) * safety_margin)`
   - At `max_tokens=5000`: `available = floor(4500 * 0.9) = 4050` tokens for result bodies
 - **Greedy RRF-rank truncation**: keep the top-ranked result whole if it fits; iterate down the ranked list; stop when the next result doesn't fit.
-- **`too_large` sentinel**: if even the top-1 result alone overflows the available budget, return `{ result: { too_large: true, id, source_uri, preview: first_200_chars, full_token_count }, meta: {...} }`. The LLM can re-query with higher `max_tokens` or directly `kg.project.get(id)` from inside a follow-up `kg_execute`.
+- **`too_large` sentinel**: if even the top-1 result alone overflows the available budget, return `{ result: { too_large: true, id, source_uri, preview: first_200_chars, full_token_count }, meta: {...} }`. The LLM can re-query with higher `max_tokens` or directly `pinakes.project.get(id)` from inside a follow-up `execute`.
 - Adversarial tests (PRD Phase 4): 1 huge node, 100 small nodes, 1 huge + 99 small, all must comply under max_tokens=5000.
 
 ### A4 — Ingest cascading reindex on wiki-updater rewrites
@@ -589,7 +589,7 @@ Summary — see `PRD.md` for the detailed breakdown with acceptance criteria and
 **Problem**: Pharos's wiki-updater (per eval-14) **rewrites whole files per turn** — every turn re-emits the full architecture.md, etc. File-level SHA-dedup fires on every turn because the file changed. Result: 6 files × ~10 chunks each × ~50ms embedding = ~3 seconds of blocking work per turn, competing with the active coding LLM for the same Ollama instance.
 
 **Patch (applied to §2.3, §3.1 F6, PRD.md Phase 2, CLAUDE.md Database Rules)**:
-- **Per-chunk content hash, not per-file.** Add `chunk_sha TEXT NOT NULL` to `kg_chunks`. On re-ingest of a whole file, compute `chunk_sha` for each new chunk; only re-embed if the sha changed. In practice, the wiki-updater adds one paragraph per turn — so only 1 of ~10 chunks needs re-embedding, not all of them.
+- **Per-chunk content hash, not per-file.** Add `chunk_sha TEXT NOT NULL` to `pinakes_chunks`. On re-ingest of a whole file, compute `chunk_sha` for each new chunk; only re-embed if the sha changed. In practice, the wiki-updater adds one paragraph per turn — so only 1 of ~10 chunks needs re-embedding, not all of them.
 - **Chokidar debounce: 2 seconds**, not default 50ms. Atomic rename + `log.md` append produce cascading events within milliseconds; 2s coalesces them.
 - **Bounded queue with drop-oldest** per `source_uri`: if 3 rewrites of `architecture.md` queue up before any ingest runs, drop the first 2 and ingest only the latest.
 
@@ -600,20 +600,20 @@ Summary — see `PRD.md` for the detailed breakdown with acceptance criteria and
 **Problem**: N=2 handles concurrency but says nothing about the COLD case. `quickjs-emscripten` module instantiation is ~20-60ms cold on Node. The spike could measure p50 cold-start at 100ms+, blowing the <50ms p50 budget before a single DB query runs.
 
 **Patch (applied to PRD.md Phase 1 acceptance, §Loop 3 risk)**:
-- **Phase 1 spike acceptance criterion #9 (new)**: measure and record `kg_execute` cold-start latency. Target: <150ms p50. If >150ms:
+- **Phase 1 spike acceptance criterion #9 (new)**: measure and record `execute` cold-start latency. Target: <150ms p50. If >150ms:
   - **Fallback path**: swap QuickJS executor for `isolated-vm` in Phase 3. Accept soft memory limit (2-3× enforced bypass possible) and host OOM risk (`setMemoryLimit` is a guideline not a wall). Mitigation: single-user local tool; isolate crash = MCP restart.
 - Update §Loop 3 risk table: "sandbox cold-start perf" raised to **High severity with a concrete fallback** instead of being hand-waved as "can be addressed."
 
 ### A6 — SQLite + sqlite-vec crash recovery
 
-**Original**: F10 says "markdown canonical, `kg-mcp rebuild` recovers in ~30s."
+**Original**: F10 says "markdown canonical, `pinakes rebuild` recovers in ~30s."
 
 **Problem**: sqlite-vec is pre-v1. Its crash-recovery behavior during half-written virtual table updates is untested. A corrupt vec table during ingest could silently return bad distances for weeks.
 
 **Patch (applied to §3.1 F10, CLAUDE.md Database Rules)**:
-- **`kg-manifest.json`** consistency file:
-  - Project scope: `.pharos/kg-manifest.json`
-  - Personal scope: `~/.pharos/profile/kg-manifest.json`
+- **`manifest.json`** consistency file:
+  - Project scope: `.pinakes/manifest.json`
+  - Personal scope: `~/.pinakes/manifest.json`
 - Format: `{ files: { <file_path>: { source_sha, chunk_shas: string[] } } }`
 - Written atomically at the end of every successful ingest transaction
 - On MCP startup, consistency check: for each file in the manifest, compute current `source_sha`. If mismatch, enqueue a rebuild for that file. Covers the case where the process crashed mid-ingest and the SQLite tables have partial state.
@@ -662,22 +662,22 @@ Summary — see `PRD.md` for the detailed breakdown with acceptance criteria and
 | D22 | Budget math: `available = floor((max - 500) * 0.9)`; greedy RRF truncation; `too_large` sentinel for single-oversize | Loop 6.5 A3 |
 | D23 | Per-chunk content hash (not per-file) + 2s chokidar debounce + bounded drop-oldest queue | Loop 6.5 A4 |
 | D24 | Phase 1 spike acceptance adds sandbox cold-start benchmark gate (<150ms p50) with isolated-vm fallback path | Loop 6.5 A5 |
-| D25 | `.pharos/kg-manifest.json` + `~/.pharos/profile/kg-manifest.json` for startup consistency check against pre-v1 sqlite-vec crash recovery | Loop 6.5 A6 |
+| D25 | `.pinakes/manifest.json` + `~/.pinakes/manifest.json` for startup consistency check against pre-v1 sqlite-vec crash recovery | Loop 6.5 A6 |
 | D26 | Innovation final cut: 4 CORE + 2 STRETCH + 2 baselines. Time-travel cut. Contradiction detector added. | Loop 6.5 A7 |
 | D27 | Bump Node runtime pin from 20 LTS to 24 LTS (`^24.10.0`, `.nvmrc 24.14.1`) | Pharos `.nvmrc`=24.14.1 + `engines: ^24.10.0` — original rationale was "match Pharos where it exists", which the Node 20 pin no longer did (§2.2) |
 | D28 | Adopt TypeScript 6 (diverges from Pharos `~5.9.3`) | User directive 2026-04-08; compiler-feature benefit accepted over dep-compat risk; rollback to `~5.9.3` if drizzle-kit/MCP SDK peer deps reject TS 6 in Phase 0 install (§2.2) |
 | D29 | Dep-pin corrections discovered during Phase 0 install: (a) MCP SDK package is `@modelcontextprotocol/sdk`, not `@modelcontextprotocol/typescript-sdk` (the latter doesn't exist on npm); (b) `better-sqlite3` bumped `^11.3.0` → `^12.8.0` because 11.x lacks Node 24 prebuilds and 12.8.0 `engines` explicitly lists `24.x`. SQLite-binary rule unchanged (`3.50.4` OR `≥3.51.3`, never `3.51.0`) — the 12.8.0 bundled SQLite is 3.51.3, verified via smoke test in Phase 0. | Phase 0 install verification 2026-04-08 |
 | D30 | Vendor the 4 pure-JS helpers from `@cloudflare/codemode` into `src/sandbox/vendored-codemode.ts` (MIT-attributed). Drop the `@cloudflare/codemode` dep entirely. Add `acorn ^8.16.0` as a direct dep (needed by `normalizeCode`) and `@types/json-schema ^7.0.15` as a direct devDep. Drives from D10 — the "Reuse `@cloudflare/codemode` Executor interface" decision — but promotes the presearch.md §2.2 "vendoring fallback" from fallback to primary path because the package's main entry imports `RpcTarget from "cloudflare:workers"` and is unusable from Node. Vendored file is ~557 LOC (over the loose 400 LOC budget, but comments/types/blank lines are ~half of that; executable statements <300). We write our own QuickJS-backed `Executor` implementation instead of adapting `DynamicWorkerExecutor`. Full audit in `dev-docs/prior-art.md §5`. | Phase 0 install + user directive 2026-04-08 |
-| D31 | QuickJS 0.32.0 promise unwrap path: use the **synchronous** `context.getPromiseState(handle)` after draining the pending-jobs queue, NOT `context.resolvePromise(...)`. Reasoning: all Phase 1 host bindings (`kg.search`, `kg.get`) are sync, so the async IIFE emitted by `normalizeCode` has no real async work — its Promise settles entirely inside the VM during `runtime.executePendingJobs()`. Bridging through `resolvePromise` (which returns a host-side JS Promise) hangs the event loop because there's nothing on the host side to resolve the bridge. Also: every handle returned by `getPromiseState` (both `state.value` when fulfilled and `state.error` when rejected) must be explicitly `.dispose()`d before disposing the runtime, or QuickJS asserts `list_empty(&rt->gc_obj_list)` and crashes the WASM module. Phase 3's warm pool must preserve both invariants. See `src/sandbox/executor.ts:execute()`. | Phase 1 spike implementation 2026-04-08 |
-| D32 | `js-tiktoken p50k_base` has **O(n²) BPE merge complexity on long repeated-character runs** (60K chars → 200s on M3 macOS, measured). This is a DoS vector on the budget gate — a user `kg_execute` call that returns a large string would block the event loop for minutes before the gate rejects it. Mitigation: `countTokens(text)` in `src/gate/budget.ts` short-circuits to a conservative character-based estimate (`ceil(text.length / 3.0)`) when `text.length > EXACT_TOKENIZE_MAX_CHARS` (currently 8000). The estimate always over-counts (real English is 4+ chars/token), so the budget gate stays safe at worst by truncating a few extra responses. Short strings (normal envelopes under ~2000 tokens) still use the exact tokenizer. This is a production invariant, not a test-only fix — any replacement tokenizer in the future must either be O(n) or preserve the length threshold. | Phase 1 spike test run 2026-04-08 |
+| D31 | QuickJS 0.32.0 promise unwrap path: use the **synchronous** `context.getPromiseState(handle)` after draining the pending-jobs queue, NOT `context.resolvePromise(...)`. Reasoning: all Phase 1 host bindings (`pinakes.search`, `pinakes.get`) are sync, so the async IIFE emitted by `normalizeCode` has no real async work — its Promise settles entirely inside the VM during `runtime.executePendingJobs()`. Bridging through `resolvePromise` (which returns a host-side JS Promise) hangs the event loop because there's nothing on the host side to resolve the bridge. Also: every handle returned by `getPromiseState` (both `state.value` when fulfilled and `state.error` when rejected) must be explicitly `.dispose()`d before disposing the runtime, or QuickJS asserts `list_empty(&rt->gc_obj_list)` and crashes the WASM module. Phase 3's warm pool must preserve both invariants. See `src/sandbox/executor.ts:execute()`. | Phase 1 spike implementation 2026-04-08 |
+| D32 | `js-tiktoken p50k_base` has **O(n²) BPE merge complexity on long repeated-character runs** (60K chars → 200s on M3 macOS, measured). This is a DoS vector on the budget gate — a user `execute` call that returns a large string would block the event loop for minutes before the gate rejects it. Mitigation: `countTokens(text)` in `src/gate/budget.ts` short-circuits to a conservative character-based estimate (`ceil(text.length / 3.0)`) when `text.length > EXACT_TOKENIZE_MAX_CHARS` (currently 8000). The estimate always over-counts (real English is 4+ chars/token), so the budget gate stays safe at worst by truncating a few extra responses. Short strings (normal envelopes under ~2000 tokens) still use the exact tokenizer. This is a production invariant, not a test-only fix — any replacement tokenizer in the future must either be O(n) or preserve the length threshold. | Phase 1 spike test run 2026-04-08 |
 | D33 | Phase 1 cold-start benchmark gate (D24) **passed decisively**: p50 = **0.38ms**, p95 = **0.68ms** over 20 runs with a fresh `QuickJSRuntime + QuickJSContext` per call on `quickjs-emscripten@0.32.0` + Node 24.14.1 + macOS arm64. Budget was 150ms p50. **QuickJS is locked as the sandbox for all subsequent phases; the `isolated-vm` fallback path referenced in D24 is dropped from planning and does not need to be implemented.** Warm-pool work in Phase 3 is still worth doing for concurrent-call throughput, not for per-call latency — there's no latency budget pressure at this scale. | Phase 1 acceptance gate 2026-04-08 |
 | D34 | Use the high-level `McpServer.registerTool(name, config, cb)` API from `@modelcontextprotocol/sdk@1.29.0`, not the low-level `Server.setRequestHandler(ListToolsRequestSchema, ...)` + `CallToolRequestSchema` path the original presearch assumed. The low-level API is deprecated in 1.29.0 (all `tool()` overloads marked `@deprecated Use registerTool instead`). `config.inputSchema` is a zod **raw shape** (`{ field: z.string(), ... }`), not a compiled schema — the SDK compiles it internally. Handlers return `{ content: [{ type: 'text', text }], isError?: boolean }`, with our envelope JSON-stringified into the single text block. This matters for Phase 3's full code-mode tool surface and any future additions. See `src/spike.ts:buildSpikeServer()` and `src/mcp/tools/{search,execute}.ts`. | Phase 1 spike implementation 2026-04-08 |
-| D35 | **Standalone self-sufficient MCP**: owns full read/write/index/query/gap-detect/gap-fill lifecycle. Write path via `kg.project.write(path, content)` binding inside `kg_execute` — writes markdown to disk (atomic rename), chokidar triggers re-indexing. Path convention moves from `.pharos/` to `.kg/`. Pharos compatibility preserved via `--wiki-path` flag. Removes dependency on external wiki-updater for writes. Gap detection becomes a closed loop (detect → surface → write → re-index → resolved) without external coordination. Supersedes D7. Safety constraints: path containment to wiki root, `.md` extension only, 100KB max per write, 20 writes per `kg_execute` call, audit-logged. | User directive 2026-04-09 |
+| D35 | **Standalone self-sufficient MCP**: owns full read/write/index/query/gap-detect/gap-fill lifecycle. Write path via `pinakes.project.write(path, content)` binding inside `execute` — writes markdown to disk (atomic rename), chokidar triggers re-indexing. Path convention moves from `.pharos/` to `.pinakes/`. Pharos compatibility preserved via `--wiki-path` flag. Removes dependency on external wiki-updater for writes. Gap detection becomes a closed loop (detect → surface → write → re-index → resolved) without external coordination. Supersedes D7. Safety constraints: path containment to wiki root, `.md` extension only, 100KB max per write, 20 writes per `execute` call, audit-logged. | User directive 2026-04-09 |
 | D36 | **LLM provider factory** (`src/llm/provider.ts`): tiered cascade for lightweight completions — MCP sampling → Ollama → API key (Anthropic/OpenAI via fetch) → `claude -p` subprocess → `codex exec` subprocess → disabled. No new deps. CLI subprocesses deprioritized as they run full agent loops with 2-5s overhead; Goose team abandoned this pattern (block/goose#5593). MCP sampling is future-proof (SDK ready, Claude Code anthropics/claude-code#1785 pending). | Phase 8, GBrain analysis 2026-04-11 |
 | D37 | **Post-RRF 3-layer dedup** (`src/retrieval/dedup.ts`): Layer 1 caps at 3 chunks/source_uri, Layer 2 drops Jaccard bigram similarity >0.85, Layer 3 final cap at 2 chunks/source_uri. Runs after RRF fusion, before budget gate. Increases result diversity. Inspired by GBrain's 4-layer pipeline (we skip their type-diversity layer since nodes are untyped). | Phase 8, GBrain analysis 2026-04-11 |
-| D38 | **Multi-query expansion** opt-in via `expand: boolean` on `kg_search`. Uses LLM provider (D36) to generate 2 alternative phrasings, runs hybrid search 3x, merges via `rrfFuseMulti`. Exception to D1 "no LLM on query path" — explicitly opt-in, non-fatal fallback. Queries <3 words skip expansion (adds noise). Module-level cache (100 entries). | Phase 8, GBrain analysis 2026-04-11 |
-| D39 | **Wikilink edge extraction** during ingest populates `kg_edges`. Regex reused from `src/gaps/detector.ts`. Resolves `[[term]]` to node IDs by matching source_uri basename or title (case-insensitive). Unresolved links silently skipped. Idempotent: old edges deleted before re-insert. Prerequisite for graph algorithms (D40). | Phase 8 stretch 2026-04-11 |
-| D40 | **PageRank + connected components** as `kg_execute` sandbox bindings (`kg.project.pagerank()`, `kg.project.components()`). Pure JS implementations over SQL-loaded adjacency data. PageRank: iterative power method (d=0.85, 20 iters). Components: BFS on undirected edges. No new deps. | Phase 8 stretch 2026-04-11 |
+| D38 | **Multi-query expansion** opt-in via `expand: boolean` on `search`. Uses LLM provider (D36) to generate 2 alternative phrasings, runs hybrid search 3x, merges via `rrfFuseMulti`. Exception to D1 "no LLM on query path" — explicitly opt-in, non-fatal fallback. Queries <3 words skip expansion (adds noise). Module-level cache (100 entries). | Phase 8, GBrain analysis 2026-04-11 |
+| D39 | **Wikilink edge extraction** during ingest populates `pinakes_edges`. Regex reused from `src/gaps/detector.ts`. Resolves `[[term]]` to node IDs by matching source_uri basename or title (case-insensitive). Unresolved links silently skipped. Idempotent: old edges deleted before re-insert. Prerequisite for graph algorithms (D40). | Phase 8 stretch 2026-04-11 |
+| D40 | **PageRank + connected components** as `execute` sandbox bindings (`pinakes.project.pagerank()`, `pinakes.project.components()`). Pure JS implementations over SQL-loaded adjacency data. PageRank: iterative power method (d=0.85, 20 iters). Components: BFS on undirected edges. No new deps. | Phase 8 stretch 2026-04-11 |
 
 ---
 

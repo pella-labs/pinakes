@@ -466,7 +466,7 @@ export type JsonSchemaToolDescriptors = Record<string, JsonSchemaToolDescriptor>
 /**
  * Generate TypeScript type definitions from tool descriptors with JSON Schema.
  * These types can be included in tool descriptions to help LLMs write correct
- * code against our `kg.*` bindings.
+ * code against our `pinakes.*` bindings.
  *
  * This function has NO dependency on the AI SDK or Zod — it works purely with
  * JSON Schema objects.

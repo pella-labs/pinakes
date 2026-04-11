@@ -31,7 +31,7 @@ describe('ingest/chokidar (Phase 2)', () => {
   let ctx: TestContext | null = null;
 
   beforeEach(() => {
-    const tmp = mkdtempSync(join(tmpdir(), 'kg-chokidar-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'pinakes-chokidar-'));
     const wikiDir = join(tmp, 'wiki');
     mkdirSync(wikiDir, { recursive: true });
     ctx = { tmp, wikiDir, watcher: null, events: [] };

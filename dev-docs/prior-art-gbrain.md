@@ -1,4 +1,4 @@
-# GBrain vs KG-MCP — Comparative Analysis
+# GBrain vs Pinakes — Comparative Analysis
 
 > Source: [github.com/garrytan/gbrain](https://github.com/garrytan/gbrain) (v0.5.0, created 2026-04-05, 3.2K stars)
 > Author: Garry Tan (Y Combinator president), built for daily use with OpenClaw AI agent.
@@ -34,12 +34,12 @@ GBrain is a personal knowledge brain (memex) that indexes markdown from a git re
 
 ## What's Different
 
-| Dimension | GBrain | KG-MCP |
+| Dimension | GBrain | Pinakes |
 |---|---|---|
 | **Runtime** | Bun | Node 24 LTS |
 | **Database** | Postgres + pgvector (1536d HNSW) | SQLite + sqlite-vec (384d) + FTS5 |
 | **Embeddings** | OpenAI `text-embedding-3-large` (requires API key, always) | Bundled transformers.js MiniLM (zero config), optional Ollama/Voyage/OpenAI |
-| **MCP tool count** | 30 individual tools (one per operation) | 2 tools (`kg_search` + `kg_execute`) via code-mode |
+| **MCP tool count** | 30 individual tools (one per operation) | 2 tools (`search` + `execute`) via code-mode |
 | **Code-mode sandbox** | None — each operation is a separate tool call | QuickJS sandbox with vendored Cloudflare code-mode |
 | **Scope model** | Single personal brain, no scoping | Project + personal scopes with strict privacy invariant |
 | **Budget gate** | None — results returned as-is | 25K-token hard cap, js-tiktoken, greedy truncation by RRF rank |
@@ -59,11 +59,11 @@ GBrain is a personal knowledge brain (memex) that indexes markdown from a git re
 
 ### Key architectural divergences
 
-1. **Tool surface philosophy.** GBrain is maximalist (30 tools = 30 schemas in context). KG-MCP is minimalist (2 tools, code-mode compresses the schema). GBrain pays the token cost of 30 tool descriptions on every conversation turn; we pay 2. Their approach is simpler to implement but burns more context window. Our approach is more complex (QuickJS sandbox) but far cheaper on tokens.
+1. **Tool surface philosophy.** GBrain is maximalist (30 tools = 30 schemas in context). Pinakes is minimalist (2 tools, code-mode compresses the schema). GBrain pays the token cost of 30 tool descriptions on every conversation turn; we pay 2. Their approach is simpler to implement but burns more context window. Our approach is more complex (QuickJS sandbox) but far cheaper on tokens.
 
-2. **Infrastructure gravity.** GBrain requires Postgres, pgvector, and an OpenAI API key to function at all. It's designed for Supabase-managed infrastructure. KG-MCP is fully local — zero external dependencies in default mode. This is a fundamental design choice, not an oversight: GBrain targets a power user (Garry) with infrastructure budget; we target any developer with `pnpm install`.
+2. **Infrastructure gravity.** GBrain requires Postgres, pgvector, and an OpenAI API key to function at all. It's designed for Supabase-managed infrastructure. Pinakes is fully local — zero external dependencies in default mode. This is a fundamental design choice, not an oversight: GBrain targets a power user (Garry) with infrastructure budget; we target any developer with `pnpm install`.
 
-3. **Privacy model.** GBrain has no concept of scope separation. All data lives in one Postgres database. KG-MCP enforces a hard privacy invariant between project and personal scopes, with a 15-test adversarial suite as a merge blocker. This is non-negotiable for our use case where personal KG data must never leak into a project repo.
+3. **Privacy model.** GBrain has no concept of scope separation. All data lives in one Postgres database. Pinakes enforces a hard privacy invariant between project and personal scopes, with a 15-test adversarial suite as a merge blocker. This is non-negotiable for our use case where personal KG data must never leak into a project repo.
 
 4. **LLM on the query path.** GBrain calls Claude Haiku on every hybrid search for query expansion. We explicitly forbid LLM calls on the query path (CLAUDE.md: "We don't call LLMs on the query path"). Their approach gets better recall at the cost of latency, cost, and an external dependency on every read.
 
@@ -74,9 +74,9 @@ GBrain is a personal knowledge brain (memex) that indexes markdown from a git re
 ### High-value, low-effort
 
 #### 1. Multi-query expansion (Phase 8 candidate)
-GBrain uses Claude Haiku to generate 2 alternative phrasings per query, then runs keyword + vector search for all variants and merges via RRF. This significantly improves recall for ambiguous or jargon-heavy queries. **We could offer this as an opt-in mode** (e.g., `expand: true` param on `kg_search`) gated behind an API key, keeping our "no LLM on query path by default" invariant intact. The expansion is non-fatal in GBrain — if Haiku fails, it falls back to the original query only.
+GBrain uses Claude Haiku to generate 2 alternative phrasings per query, then runs keyword + vector search for all variants and merges via RRF. This significantly improves recall for ambiguous or jargon-heavy queries. **We could offer this as an opt-in mode** (e.g., `expand: true` param on `search`) gated behind an API key, keeping our "no LLM on query path by default" invariant intact. The expansion is non-fatal in GBrain — if Haiku fails, it falls back to the original query only.
 
-**Effort**: Small. Add an optional `expand` boolean to `kg_search`, call Haiku for 2 alt phrasings, run existing hybrid search 3x, merge with existing RRF. ~100 LOC.
+**Effort**: Small. Add an optional `expand` boolean to `search`, call Haiku for 2 alt phrasings, run existing hybrid search 3x, merge with existing RRF. ~100 LOC.
 
 #### 2. 4-layer dedup pipeline
 GBrain's dedup is more sophisticated than ours:
@@ -117,7 +117,7 @@ This maps directly to Karpathy's wiki spec and creates a natural separation betw
 #### 6. Page versioning / snapshot history
 GBrain snapshots `compiled_truth` on every update to `page_versions` with revert capability. This is useful for the write path — when the LLM rewrites a wiki page, you can always go back. We don't currently track versions beyond what git provides.
 
-**Effort**: Medium. Add `kg_node_versions` table + snapshot on write. ~150 LOC + migration.
+**Effort**: Medium. Add `pinakes_node_versions` table + snapshot on write. ~150 LOC + migration.
 
 **Trade-off**: Git already provides version history for the canonical markdown. This is only useful if you want in-tool revert without git CLI. Probably not worth it given our "markdown is canonical" stance — `git log` + `git checkout` already do this.
 

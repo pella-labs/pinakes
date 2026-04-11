@@ -8,8 +8,8 @@ import { logger } from './logger.js';
  * Audit log writer with scope-split JSONL mirror.
  *
  * Per CLAUDE.md §Security #7:
- *   - scope='project' → kg_audit table in project .kg/kg.db + .kg/audit.jsonl
- *   - scope='personal' or 'both' → kg_audit table in ~/.kg/kg.db + ~/.kg/audit.jsonl
+ *   - scope='project' → pinakes_audit table in ~/.pinakes/projects/<mangled>/pinakes.db + audit.jsonl
+ *   - scope='personal' or 'both' → pinakes_audit table in ~/.pinakes/pinakes.db + ~/.pinakes/audit.jsonl
  *   - NEVER write personal query text to a path inside the project repo
  */
 
@@ -35,11 +35,11 @@ export function writeAuditRow(
 ): void {
   const ts = Date.now();
 
-  // Write to kg_audit table
+  // Write to pinakes_audit table
   try {
     writer
       .prepare(
-        `INSERT INTO kg_audit (ts, tool_name, scope_requested, caller_ctx, response_tokens, error)
+        `INSERT INTO pinakes_audit (ts, tool_name, scope_requested, caller_ctx, response_tokens, error)
          VALUES (?, ?, ?, ?, ?, ?)`
       )
       .run(
@@ -51,7 +51,7 @@ export function writeAuditRow(
         entry.error ?? null
       );
   } catch (err) {
-    logger.warn({ err, entry }, 'failed to write kg_audit row');
+    logger.warn({ err, entry }, 'failed to write pinakes_audit row');
   }
 
   // Mirror to JSONL

@@ -1,13 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { closeDb, openDb } from '../db/client.js';
 import { logger } from '../observability/logger.js';
+import { resolveCliDbPath } from '../paths.js';
 
 /**
- * `kg import --scope <s> --in file.json` — restore nodes, edges, and chunks
- * from a JSON dump produced by `kg export`.
+ * `pinakes import --scope <s> --in file.json` — restore nodes, edges, and chunks
+ * from a JSON dump produced by `pinakes export`.
  *
  * Imports are additive: existing rows with the same PK are replaced via
  * INSERT OR REPLACE. This makes import idempotent — running it twice
@@ -55,7 +54,7 @@ export function importCommand(options: ImportOptions): ImportResult {
     );
   }
 
-  const dbPath = resolveDbPath(options, options.scope);
+  const dbPath = resolveCliDbPath(options, options.scope);
   const bundle = openDb(dbPath);
   try {
     const result: ImportResult = { scope: options.scope, nodes: 0, edges: 0, chunks: 0 };
@@ -65,7 +64,7 @@ export function importCommand(options: ImportOptions): ImportResult {
       // Import nodes
       if (data.nodes?.length) {
         const insertNode = bundle.writer.prepare(
-          `INSERT OR REPLACE INTO kg_nodes
+          `INSERT OR REPLACE INTO pinakes_nodes
            (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, confidence, created_at, updated_at, last_accessed_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
@@ -83,7 +82,7 @@ export function importCommand(options: ImportOptions): ImportResult {
       // Import edges
       if (data.edges?.length) {
         const insertEdge = bundle.writer.prepare(
-          `INSERT OR REPLACE INTO kg_edges (src_id, dst_id, edge_kind)
+          `INSERT OR REPLACE INTO pinakes_edges (src_id, dst_id, edge_kind)
            VALUES (?, ?, ?)`
         );
         for (const e of data.edges) {
@@ -100,7 +99,7 @@ export function importCommand(options: ImportOptions): ImportResult {
       // Import chunks
       if (data.chunks?.length) {
         const insertChunk = bundle.writer.prepare(
-          `INSERT OR REPLACE INTO kg_chunks
+          `INSERT OR REPLACE INTO pinakes_chunks
            (id, node_id, chunk_index, text, chunk_sha, token_count, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`
         );
@@ -133,22 +132,3 @@ export function renderImport(result: ImportResult): string {
   return `${result.scope}: imported ${result.nodes} nodes, ${result.edges} edges, ${result.chunks} chunks`;
 }
 
-// ----------------------------------------------------------------------------
-// Path helpers
-// ----------------------------------------------------------------------------
-
-function resolveDbPath(options: ImportOptions, scope: 'project' | 'personal'): string {
-  if (scope === 'personal') {
-    if (options.profileDbPath) return resolveAbs(options.profileDbPath);
-    const env = process.env.KG_PROFILE_PATH;
-    const profileDir = env ? resolveAbs(env) : resolve(homedir(), '.pharos/profile');
-    return resolve(profileDir, 'kg.db');
-  }
-  if (options.dbPath) return resolveAbs(options.dbPath);
-  if (options.wikiPath) return resolve(dirname(resolveAbs(options.wikiPath)), '.pinakes', 'pinakes.db');
-  return resolve(process.cwd(), '.pinakes', 'pinakes.db');
-}
-
-function resolveAbs(p: string): string {
-  return isAbsolute(p) ? p : resolve(process.cwd(), p);
-}

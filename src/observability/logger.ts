@@ -1,7 +1,7 @@
 import { pino, type Logger, type LoggerOptions } from 'pino';
 
 /**
- * Pino logger for KG-MCP.
+ * Pino logger for Pinakes.
  *
  * CRITICAL: MCP stdio transport uses stdout for the JSON-RPC protocol. Every
  * log line must go to stderr — writing to stdout would corrupt the protocol
@@ -10,14 +10,14 @@ import { pino, type Logger, type LoggerOptions } from 'pino';
  * destination that would route to stdout.
  *
  * Pretty transport is only enabled when:
- *   1. `KG_LOG_LEVEL=debug` or `trace`, AND
+ *   1. `PINAKES_LOG_LEVEL=debug` or `trace`, AND
  *   2. stderr is a TTY (i.e. a developer is watching in a terminal)
  *
  * In production (Pharos-spawned stdio child, non-TTY), logs stay as newline-
  * delimited JSON for machine consumption.
  */
 
-const level = process.env.KG_LOG_LEVEL ?? 'info';
+const level = process.env.PINAKES_LOG_LEVEL ?? 'info';
 const isVerbose = level === 'debug' || level === 'trace';
 const isTty = process.stderr.isTTY ?? false;
 const usePretty = isVerbose && isTty;
@@ -25,7 +25,7 @@ const usePretty = isVerbose && isTty;
 const baseOptions: LoggerOptions = {
   level,
   base: {
-    service: 'kg-mcp',
+    service: 'pinakes',
     pid: process.pid,
   },
   timestamp: pino.stdTimeFunctions.isoTime,

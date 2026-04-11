@@ -9,15 +9,15 @@ import { logger } from '../observability/logger.js';
  * between the ingest path (computing chunk embeddings on insert) and the
  * future query path in Phase 4 (computing query embeddings for vector
  * search). Putting it under `retrieval/` keeps the code-mode bindings'
- * mental model consistent — `kg.vec()` and ingest both call into the same
+ * mental model consistent — `pinakes.vec()` and ingest both call into the same
  * factory.
  *
  * **Provider strategy** (CLAUDE.md §AI Rules #3): Phase 2 ships only the
  * bundled MiniLM provider. Phase 4 adds the env-driven factory:
- *   - `KG_EMBED_PROVIDER=transformers` (default, this file)
- *   - `KG_EMBED_PROVIDER=ollama` (HTTP, user-controlled)
- *   - `KG_EMBED_PROVIDER=voyage` (HTTPS, paid)
- *   - `KG_EMBED_PROVIDER=openai` (HTTPS, paid)
+ *   - `PINAKES_EMBED_PROVIDER=transformers` (default, this file)
+ *   - `PINAKES_EMBED_PROVIDER=ollama` (HTTP, user-controlled)
+ *   - `PINAKES_EMBED_PROVIDER=voyage` (HTTPS, paid)
+ *   - `PINAKES_EMBED_PROVIDER=openai` (HTTPS, paid)
  *
  * **Failure mode** (CLAUDE.md §AI Rules #4): if the embedder fails during
  * ingest, the ingester logs a warning and inserts the node + chunks WITHOUT
@@ -38,7 +38,7 @@ export const EMBEDDING_DIM = 384;
  * `VoyageEmbedder` / `OpenAIEmbedder`.
  */
 export interface Embedder {
-  /** Output dimension — load-bearing for the `kg_chunks_vec` schema */
+  /** Output dimension — load-bearing for the `pinakes_chunks_vec` schema */
   readonly dim: number;
   /** Eagerly load the underlying model. Optional — embed() will lazy-load on first call. */
   warmup(): Promise<void>;
@@ -156,7 +156,7 @@ export class CountingEmbedder implements Embedder {
 
 /**
  * Ollama embedder via HTTP POST to `/api/embeddings`.
- * Requires `KG_OLLAMA_URL` and `KG_OLLAMA_MODEL` env vars.
+ * Requires `PINAKES_OLLAMA_URL` and `PINAKES_OLLAMA_MODEL` env vars.
  */
 export class OllamaEmbedder implements Embedder {
   readonly dim: number;
@@ -199,7 +199,7 @@ export class OllamaEmbedder implements Embedder {
 
 /**
  * Voyage AI embedder via HTTPS POST to `https://api.voyageai.com/v1/embeddings`.
- * Requires `KG_VOYAGE_API_KEY` env var.
+ * Requires `PINAKES_VOYAGE_API_KEY` env var.
  */
 export class VoyageEmbedder implements Embedder {
   readonly dim: number;
@@ -243,7 +243,7 @@ export class VoyageEmbedder implements Embedder {
 
 /**
  * OpenAI embedder via HTTPS POST to `https://api.openai.com/v1/embeddings`.
- * Requires `KG_OPENAI_API_KEY` env var.
+ * Requires `PINAKES_OPENAI_API_KEY` env var.
  */
 export class OpenAIEmbedder implements Embedder {
   readonly dim: number;
@@ -293,24 +293,24 @@ export type EmbedProvider = 'transformers' | 'ollama' | 'voyage' | 'openai';
  * provider is unrecognized.
  */
 export function createEmbedder(provider?: EmbedProvider): Embedder {
-  const p = provider ?? (process.env['KG_EMBED_PROVIDER'] as EmbedProvider | undefined) ?? 'transformers';
+  const p = provider ?? (process.env['PINAKES_EMBED_PROVIDER'] as EmbedProvider | undefined) ?? 'transformers';
 
   switch (p) {
     case 'ollama': {
-      const url = process.env['KG_OLLAMA_URL'] ?? 'http://localhost:11434';
-      const model = process.env['KG_OLLAMA_MODEL'] ?? 'nomic-embed-text';
+      const url = process.env['PINAKES_OLLAMA_URL'] ?? 'http://localhost:11434';
+      const model = process.env['PINAKES_OLLAMA_MODEL'] ?? 'nomic-embed-text';
       return new OllamaEmbedder(url, model);
     }
     case 'voyage': {
-      const key = process.env['KG_VOYAGE_API_KEY'];
-      if (!key) throw new Error('KG_VOYAGE_API_KEY is required for voyage embedder');
-      const model = process.env['KG_EMBED_MODEL'] ?? 'voyage-code-3';
+      const key = process.env['PINAKES_VOYAGE_API_KEY'];
+      if (!key) throw new Error('PINAKES_VOYAGE_API_KEY is required for voyage embedder');
+      const model = process.env['PINAKES_EMBED_MODEL'] ?? 'voyage-code-3';
       return new VoyageEmbedder(key, model);
     }
     case 'openai': {
-      const key = process.env['KG_OPENAI_API_KEY'];
-      if (!key) throw new Error('KG_OPENAI_API_KEY is required for openai embedder');
-      const model = process.env['KG_EMBED_MODEL'] ?? 'text-embedding-3-small';
+      const key = process.env['PINAKES_OPENAI_API_KEY'];
+      if (!key) throw new Error('PINAKES_OPENAI_API_KEY is required for openai embedder');
+      const model = process.env['PINAKES_EMBED_MODEL'] ?? 'text-embedding-3-small';
       return new OpenAIEmbedder(key, model);
     }
     case 'transformers':

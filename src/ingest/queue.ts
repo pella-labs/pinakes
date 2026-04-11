@@ -4,7 +4,7 @@ import type { IngestEvent, IngestSource } from './source.js';
  * `QueueSubscriber` — placeholder for the Phase 5+ orchestrator contract.
  *
  * The orchestration engineer (per the project memory) is separately
- * building a message-queue contract that will feed events into KG-MCP.
+ * building a message-queue contract that will feed events into Pinakes.
  * When that lands, this class becomes a real subscriber. Until then it
  * exists so:
  *   1. The `IngestSource` interface has both implementations the codebase

@@ -20,7 +20,7 @@ export const DISABLE_GLOBALS_BOOTSTRAP = `
     try { delete globalThis[name]; } catch (_) {}
     try {
       Object.defineProperty(globalThis, name, {
-        get() { throw new Error(name + ' is not available in the kg sandbox'); },
+        get() { throw new Error(name + ' is not available in the pinakes sandbox'); },
         configurable: false,
       });
     } catch (_) {}
@@ -33,7 +33,7 @@ export const DISABLE_GLOBALS_BOOTSTRAP = `
   ban('WebAssembly');
   try {
     Object.defineProperty(globalThis, 'constructor', {
-      get() { throw new Error('constructor is not available in the kg sandbox'); },
+      get() { throw new Error('constructor is not available in the pinakes sandbox'); },
       configurable: false,
     });
   } catch (_) {}

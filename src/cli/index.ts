@@ -10,15 +10,15 @@ import { serveCommand } from './serve.js';
 import { logger } from '../observability/logger.js';
 
 /**
- * `kg` CLI router for KG-MCP Phase 2.
+ * `pinakes` CLI router for Pinakes Phase 2.
  *
  * Tiny manual arg parser — no `commander`/`yargs` dep, per CLAUDE.md tech
  * stack rule "Do not add new dependencies without justification."
  *
  * Subcommands:
- *   kg serve   --wiki-path <dir> [--db-path] [--profile-path] [--profile-db-path]
- *   kg rebuild --wiki-path <dir> [--db-path] [--scope project|personal|both]
- *   kg status  [--db-path <path>] [--wiki-path <dir>] [--profile-db-path <path>]
+ *   pinakes serve   --wiki-path <dir> [--db-path] [--profile-path] [--profile-db-path]
+ *   pinakes rebuild --wiki-path <dir> [--db-path] [--scope project|personal|both]
+ *   pinakes status  [--db-path <path>] [--wiki-path <dir>] [--profile-db-path <path>]
  */
 
 type Flags = Record<string, string | true>;
@@ -67,7 +67,8 @@ async function main(): Promise<void> {
   switch (subcommand) {
     case 'serve': {
       await serveCommand({
-        wikiPath: getRequiredString(flags, 'wiki-path'),
+        projectRoot: getString(flags, 'project-root'),
+        wikiPath: getString(flags, 'wiki-path'),
         dbPath: getString(flags, 'db-path'),
         profilePath: getString(flags, 'profile-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
@@ -82,7 +83,8 @@ async function main(): Promise<void> {
         | 'both'
         | undefined;
       const summaries = await rebuildCommand({
-        wikiPath: getRequiredString(flags, 'wiki-path'),
+        projectRoot: getString(flags, 'project-root'),
+        wikiPath: getString(flags, 'wiki-path'),
         dbPath: getString(flags, 'db-path'),
         profilePath: getString(flags, 'profile-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
@@ -199,17 +201,20 @@ async function main(): Promise<void> {
     case '-h':
     case '--help': {
       // eslint-disable-next-line no-console
-      console.log(`kg — KG-MCP CLI
+      console.log(`pinakes — Pinakes CLI
+
+All project data is stored under ~/.pinakes/projects/<mangled-project-root>/.
+Personal data is stored under ~/.pinakes/. Set PINAKES_ROOT to override.
 
 Usage:
-  kg serve   --wiki-path <dir> [--db-path <path>] [--profile-path <dir>] [--profile-db-path <path>]
-  kg rebuild --wiki-path <dir> [--db-path <path>] [--scope project|personal|both]
-  kg status  [--db-path <path>] [--wiki-path <dir>] [--profile-db-path <path>]
-  kg audit   [--tail] [--n <count>] [--scope project|personal] [--db-path <path>]
-  kg purge   --scope <project|personal> --confirm [--db-path <path>]
-  kg export  --scope <project|personal> [--out file.json] [--db-path <path>]
-  kg import  --scope <project|personal> --in file.json [--db-path <path>]
-  kg contradiction-scan [--scope project|personal] [--wiki-path <dir>] [--db-path <path>]`);
+  pinakes serve   [--project-root <dir>] [--wiki-path <dir>] [--db-path <path>] [--profile-path <dir>] [--profile-db-path <path>]
+  pinakes rebuild [--project-root <dir>] [--wiki-path <dir>] [--db-path <path>] [--scope project|personal|both]
+  pinakes status  [--project-root <dir>] [--db-path <path>] [--profile-db-path <path>]
+  pinakes audit   [--n <count>] [--scope project|personal] [--project-root <dir>] [--db-path <path>]
+  pinakes purge   --scope <project|personal> --confirm [--project-root <dir>] [--db-path <path>]
+  pinakes export  --scope <project|personal> [--out file.json] [--project-root <dir>] [--db-path <path>]
+  pinakes import  --scope <project|personal> --in file.json [--project-root <dir>] [--db-path <path>]
+  pinakes contradiction-scan [--scope project|personal] [--project-root <dir>] [--wiki-path <dir>] [--db-path <path>]`);
       break;
     }
 
@@ -219,7 +224,7 @@ Usage:
 }
 
 main().catch((err) => {
-  logger.error({ err }, 'kg cli failed');
+  logger.error({ err }, 'pinakes cli failed');
   console.error(err instanceof Error ? err.message : err);
   process.exit(1);
 });

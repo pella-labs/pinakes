@@ -11,8 +11,8 @@ import { CountingEmbedder, getDefaultEmbedder, createEmbedder, TransformersEmbed
 import { ftsQuery, escapeFts5Query } from '../../retrieval/fts.js';
 import { vecQuery, vecSearch } from '../../retrieval/vec.js';
 import { hybridSearch, rrfFuse } from '../../retrieval/hybrid.js';
-import { makeKgSearchHandler } from '../../mcp/tools/search.js';
-import { makeKgExecuteHandler } from '../../mcp/tools/execute.js';
+import { makeSearchHandler } from '../../mcp/tools/search.js';
+import { makeExecuteHandler } from '../../mcp/tools/execute.js';
 import { QuickJSExecutor } from '../../sandbox/executor.js';
 import { computeInternalBudget, fitResults, countTokens } from '../../gate/budget.js';
 
@@ -36,14 +36,14 @@ let tmpRoot: string;
 beforeAll(async () => {
   __resetSingleFlightForTests();
 
-  tmpRoot = mkdtempSync(join(tmpdir(), 'kg-phase4-'));
+  tmpRoot = mkdtempSync(join(tmpdir(), 'pinakes-phase4-'));
   const wikiDir = join(tmpRoot, 'wiki');
   mkdirSync(wikiDir, { recursive: true });
   for (const name of readdirSync(FIXTURE_DIR)) {
     copyFileSync(join(FIXTURE_DIR, name), join(wikiDir, name));
   }
 
-  bundle = openDb(join(tmpRoot, 'kg.db'));
+  bundle = openDb(join(tmpRoot, 'pinakes.db'));
   embedder = new CountingEmbedder(getDefaultEmbedder());
   await embedder.warmup();
 
@@ -135,8 +135,8 @@ describe('vector retrieval', () => {
 
   it('graceful degradation: empty vec table returns []', () => {
     // Create a fresh DB with no vec rows
-    const emptyRoot = mkdtempSync(join(tmpdir(), 'kg-vec-empty-'));
-    const emptyBundle = openDb(join(emptyRoot, 'kg.db'));
+    const emptyRoot = mkdtempSync(join(tmpdir(), 'pinakes-vec-empty-'));
+    const emptyBundle = openDb(join(emptyRoot, 'pinakes.db'));
     const reader = nextReader(emptyBundle);
     const fakeEmbedding = new Float32Array(384);
     const results = vecQuery(reader, 'project', fakeEmbedding, 10);
@@ -219,12 +219,12 @@ describe('embedder factory', () => {
 
   it('createEmbedder("voyage") throws without API key', () => {
     // Ensure env var is not set
-    const original = process.env['KG_VOYAGE_API_KEY'];
-    delete process.env['KG_VOYAGE_API_KEY'];
+    const original = process.env['PINAKES_VOYAGE_API_KEY'];
+    delete process.env['PINAKES_VOYAGE_API_KEY'];
     try {
-      expect(() => createEmbedder('voyage')).toThrow('KG_VOYAGE_API_KEY');
+      expect(() => createEmbedder('voyage')).toThrow('PINAKES_VOYAGE_API_KEY');
     } finally {
-      if (original) process.env['KG_VOYAGE_API_KEY'] = original;
+      if (original) process.env['PINAKES_VOYAGE_API_KEY'] = original;
     }
   });
 });
@@ -336,12 +336,12 @@ describe('budget gate adversarial (Phase 4)', () => {
 });
 
 // ============================================================================
-// End-to-end kg_search hybrid test
+// End-to-end search hybrid test
 // ============================================================================
 
-describe('kg_search hybrid e2e', () => {
-  it('ingest fixture wiki, call kg_search, get ranked results with scores', async () => {
-    const handler = makeKgSearchHandler({ repository, embedder, bundle });
+describe('search hybrid e2e', () => {
+  it('ingest fixture wiki, call search, get ranked results with scores', async () => {
+    const handler = makeSearchHandler({ repository, embedder, bundle });
     const res = await handler({ query: 'bcrypt password hashing' });
     const { envelope } = parseResponse(res);
     expect(envelope.result.length).toBeGreaterThanOrEqual(1);
@@ -358,9 +358,9 @@ describe('kg_search hybrid e2e', () => {
 // ============================================================================
 
 describe('sandbox hybrid integration', () => {
-  it('kg.project.hybrid("bcrypt") in sandbox returns FTS-ranked results', async () => {
-    const handler = makeKgExecuteHandler({ repository, executor, bundle, embedder });
-    const res = await handler({ code: "return kg.project.hybrid('bcrypt')" });
+  it('pinakes.project.hybrid("bcrypt") in sandbox returns FTS-ranked results', async () => {
+    const handler = makeExecuteHandler({ repository, executor, bundle, embedder });
+    const res = await handler({ code: "return pinakes.project.hybrid('bcrypt')" });
     const { envelope } = parseResponse(res);
     expect(envelope.result.length).toBeGreaterThanOrEqual(1);
     // Results should have RRF score
@@ -369,9 +369,9 @@ describe('sandbox hybrid integration', () => {
     expect(first.source_uri).toContain('auth');
   });
 
-  it('kg.project.fts("WAL") in sandbox returns database.md results with snippet', async () => {
-    const handler = makeKgExecuteHandler({ repository, executor, bundle, embedder });
-    const res = await handler({ code: "return kg.project.fts('WAL')" });
+  it('pinakes.project.fts("WAL") in sandbox returns database.md results with snippet', async () => {
+    const handler = makeExecuteHandler({ repository, executor, bundle, embedder });
+    const res = await handler({ code: "return pinakes.project.fts('WAL')" });
     const { envelope } = parseResponse(res);
     expect(envelope.result.length).toBeGreaterThanOrEqual(1);
     const first = envelope.result[0] as { source_uri: string; snippet: string };

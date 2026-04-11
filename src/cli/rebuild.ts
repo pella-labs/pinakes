@@ -1,15 +1,20 @@
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { closeDb, openDb } from '../db/client.js';
 import { IngesterService } from '../ingest/ingester.js';
 import { listMarkdownFiles } from '../ingest/manifest.js';
 import { logger } from '../observability/logger.js';
+import {
+  resolveAbs,
+  projectWikiPath as defaultProjectWikiPath,
+  projectDbPath as defaultProjectDbPath,
+  personalWikiPath as defaultPersonalWikiPath,
+  personalDbPath as defaultPersonalDbPath,
+} from '../paths.js';
 import { TransformersEmbedder, type Embedder } from '../retrieval/embedder.js';
 
 /**
- * `kg rebuild` — full-rebuild-from-markdown CLI subcommand for KG-MCP Phase 2.
+ * `pinakes rebuild` — full-rebuild-from-markdown CLI subcommand for Pinakes Phase 2.
  *
  * Walks the wiki directory, calls `IngesterService.ingestFile` for every
  * markdown file, prints a summary. Default behavior: ingest both project and
@@ -29,13 +34,15 @@ import { TransformersEmbedder, type Embedder } from '../retrieval/embedder.js';
  */
 
 export interface RebuildOptions {
-  /** Project wiki directory (required) */
-  wikiPath: string;
-  /** Project DB path (default: `<wikiPath>/../kg.db`) */
+  /** Project root directory (default: cwd). Used to derive the mirrored data dir under ~/.pinakes/projects/. */
+  projectRoot?: string;
+  /** Project wiki directory (default: `~/.pinakes/projects/<mangled-root>/wiki`) */
+  wikiPath?: string;
+  /** Project DB path (default: `~/.pinakes/projects/<mangled-root>/pinakes.db`) */
   dbPath?: string;
-  /** Personal wiki directory (default: `~/.pharos/profile/wiki`) */
+  /** Personal wiki directory (default: `~/.pinakes/wiki`) */
   profilePath?: string;
-  /** Personal DB path (default: `<profilePath>/../kg.db`) */
+  /** Personal DB path (default: `~/.pinakes/pinakes.db`) */
   profileDbPath?: string;
   /** Which scopes to rebuild: 'project' | 'personal' | 'both' (default: 'both', falls back to 'project' if profile dir missing) */
   scope?: 'project' | 'personal' | 'both';
@@ -65,16 +72,15 @@ export interface RebuildSummary {
 export async function rebuildCommand(options: RebuildOptions): Promise<RebuildSummary[]> {
   const summaries: RebuildSummary[] = [];
 
-  const projectWiki = resolveAbs(options.wikiPath);
+  const projectRoot = resolveAbs(options.projectRoot ?? process.cwd());
+  const projectWiki = resolveAbs(options.wikiPath ?? defaultProjectWikiPath(projectRoot));
   if (!existsSync(projectWiki)) {
     throw new Error(`wiki path does not exist: ${projectWiki}`);
   }
-  const projectDbPath = resolveAbs(options.dbPath ?? defaultDbPathFor(projectWiki));
+  const projectDbPath = resolveAbs(options.dbPath ?? defaultProjectDbPath(projectRoot));
 
-  const profileWiki = resolveAbs(options.profilePath ?? defaultProfileWikiPath());
-  const profileDbPath = resolveAbs(
-    options.profileDbPath ?? defaultDbPathFor(profileWiki)
-  );
+  const profileWiki = resolveAbs(options.profilePath ?? defaultPersonalWikiPath());
+  const profileDbPath = resolveAbs(options.profileDbPath ?? defaultPersonalDbPath());
 
   const scope = options.scope ?? 'both';
   const includeProject = scope === 'project' || scope === 'both';
@@ -123,12 +129,12 @@ async function rebuildOneScope(args: {
     if (scope === 'project') {
       try {
         const orphaned = bundle.writer
-          .prepare("SELECT COUNT(*) AS cnt FROM kg_nodes WHERE scope = 'project' AND source_uri LIKE 'file://%'")
+          .prepare("SELECT COUNT(*) AS cnt FROM pinakes_nodes WHERE scope = 'project' AND source_uri LIKE 'file://%'")
           .get() as { cnt: number };
         if (orphaned.cnt > 0) {
           logger.info({ count: orphaned.cnt }, 'rebuild: deleting legacy absolute-path rows');
-          bundle.writer.exec("DELETE FROM kg_chunks_vec WHERE rowid IN (SELECT c.rowid FROM kg_chunks c JOIN kg_nodes n ON c.node_id = n.id WHERE n.scope = 'project' AND n.source_uri LIKE 'file://%')");
-          bundle.writer.exec("DELETE FROM kg_nodes WHERE scope = 'project' AND source_uri LIKE 'file://%'");
+          bundle.writer.exec("DELETE FROM pinakes_chunks_vec WHERE rowid IN (SELECT c.rowid FROM pinakes_chunks c JOIN pinakes_nodes n ON c.node_id = n.id WHERE n.scope = 'project' AND n.source_uri LIKE 'file://%')");
+          bundle.writer.exec("DELETE FROM pinakes_nodes WHERE scope = 'project' AND source_uri LIKE 'file://%'");
         }
       } catch (err) {
         logger.warn({ err }, 'legacy URI cleanup failed — continuing');
@@ -171,27 +177,3 @@ async function rebuildOneScope(args: {
   }
 }
 
-// ----------------------------------------------------------------------------
-// Path defaults
-// ----------------------------------------------------------------------------
-
-function resolveAbs(p: string): string {
-  return isAbsolute(p) ? p : resolve(process.cwd(), p);
-}
-
-/**
- * Default DB path for a given wiki directory: `<wikiDir>/../.pinakes/pinakes.db`.
- */
-function defaultDbPathFor(wikiDir: string): string {
-  return resolve(dirname(wikiDir), '.pinakes', 'pinakes.db');
-}
-
-/**
- * Default personal wiki path. Honors `KG_PROFILE_PATH` env var, else
- * `~/.pharos/profile/wiki`.
- */
-function defaultProfileWikiPath(): string {
-  const env = process.env.KG_PROFILE_PATH;
-  if (env) return resolve(env, 'wiki');
-  return resolve(homedir(), '.pharos/profile/wiki');
-}

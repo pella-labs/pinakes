@@ -11,11 +11,11 @@ import { IngesterService, __resetSingleFlightForTests } from '../ingest/ingester
 import { CountingEmbedder, getDefaultEmbedder } from '../retrieval/embedder.js';
 import { QuickJSExecutor } from '../sandbox/executor.js';
 import { SandboxPool } from '../sandbox/pool.js';
-import { makeKgExecuteHandler } from '../mcp/tools/execute.js';
+import { makeExecuteHandler } from '../mcp/tools/execute.js';
 import type { BindingDeps } from '../sandbox/bindings/install.js';
 
 /**
- * Phase 3 sandbox tests — warm pool, full `kg.project.*` bindings, budget
+ * Phase 3 sandbox tests — warm pool, full `pinakes.project.*` bindings, budget
  * helper, disabled globals adversarial, and resource limit verification.
  *
  * All tests use real SQLite and real QuickJS (CLAUDE.md §Testing Rules #5-6).
@@ -28,7 +28,7 @@ const FIXTURE_DIR = resolve(
 let bundle: DbBundle;
 let repository: Repository;
 let executor: QuickJSExecutor;
-let executeHandler: ReturnType<typeof makeKgExecuteHandler>;
+let executeHandler: ReturnType<typeof makeExecuteHandler>;
 let tmpRoot: string;
 
 /** Helper to build BindingDeps for direct `executeWithBindings` calls. */
@@ -51,14 +51,14 @@ function parseResponse(response: { content: [{ type: 'text'; text: string }] }) 
 beforeAll(async () => {
   __resetSingleFlightForTests();
 
-  tmpRoot = mkdtempSync(join(tmpdir(), 'kg-phase3-'));
+  tmpRoot = mkdtempSync(join(tmpdir(), 'pinakes-phase3-'));
   const wikiDir = join(tmpRoot, 'wiki');
   mkdirSync(wikiDir, { recursive: true });
   for (const name of readdirSync(FIXTURE_DIR)) {
     copyFileSync(join(FIXTURE_DIR, name), join(wikiDir, name));
   }
 
-  bundle = openDb(join(tmpRoot, 'kg.db'));
+  bundle = openDb(join(tmpRoot, 'pinakes.db'));
   const embedder = new CountingEmbedder(getDefaultEmbedder());
   await embedder.warmup();
   const ingester = new IngesterService(bundle, embedder, 'project', wikiDir);
@@ -71,7 +71,7 @@ beforeAll(async () => {
   repository = new Repository(bundle);
   executor = new QuickJSExecutor();
   await executor.warmup();
-  executeHandler = makeKgExecuteHandler({ repository, executor, bundle, embedder });
+  executeHandler = makeExecuteHandler({ repository, executor, bundle, embedder });
 });
 
 afterAll(() => {
@@ -250,13 +250,13 @@ describe('resource limits (Phase 3)', () => {
 });
 
 // ============================================================================
-// kg.project.* bindings (7 tests)
+// pinakes.project.* bindings (7 tests)
 // ============================================================================
 
-describe('kg.project bindings (Phase 3)', () => {
+describe('pinakes.project bindings (Phase 3)', () => {
   it('fts() returns results with rank field sorted by bm25', async () => {
     const result = await executor.executeWithBindings(
-      "return kg.project.fts('password')",
+      "return pinakes.project.fts('password')",
       makeDeps()
     );
     expect(result.error).toBeUndefined();
@@ -273,7 +273,7 @@ describe('kg.project bindings (Phase 3)', () => {
 
   it('fts() respects limit option', async () => {
     const result = await executor.executeWithBindings(
-      "return kg.project.fts('password', { limit: 2 })",
+      "return pinakes.project.fts('password', { limit: 2 })",
       makeDeps()
     );
     expect(result.error).toBeUndefined();
@@ -284,14 +284,14 @@ describe('kg.project bindings (Phase 3)', () => {
   it('get() returns node with full section content', async () => {
     // First get a node id via fts
     const ftsResult = await executor.executeWithBindings(
-      "return kg.project.fts('password')[0]?.node_id",
+      "return pinakes.project.fts('password')[0]?.node_id",
       makeDeps()
     );
     const nodeId = ftsResult.result as string;
     expect(nodeId).toBeTruthy();
 
     const result = await executor.executeWithBindings(
-      `return kg.project.get('${nodeId}')`,
+      `return pinakes.project.get('${nodeId}')`,
       makeDeps()
     );
     expect(result.error).toBeUndefined();
@@ -310,13 +310,13 @@ describe('kg.project bindings (Phase 3)', () => {
 
   it('neighbors() returns [] with empty edges (validates SQL)', async () => {
     const ftsResult = await executor.executeWithBindings(
-      "return kg.project.fts('password')[0]?.node_id",
+      "return pinakes.project.fts('password')[0]?.node_id",
       makeDeps()
     );
     const nodeId = ftsResult.result as string;
 
     const result = await executor.executeWithBindings(
-      `return kg.project.neighbors('${nodeId}')`,
+      `return pinakes.project.neighbors('${nodeId}')`,
       makeDeps()
     );
     expect(result.error).toBeUndefined();
@@ -325,7 +325,7 @@ describe('kg.project bindings (Phase 3)', () => {
 
   it('log.recent() returns ingest events', async () => {
     const result = await executor.executeWithBindings(
-      'return kg.project.log.recent(5)',
+      'return pinakes.project.log.recent(5)',
       makeDeps()
     );
     expect(result.error).toBeUndefined();
@@ -337,7 +337,7 @@ describe('kg.project bindings (Phase 3)', () => {
 
   it('vec() returns [] without pre-computed embedding', async () => {
     const result = await executor.executeWithBindings(
-      "return kg.project.vec('test')",
+      "return pinakes.project.vec('test')",
       makeDeps()
     );
     expect(result.error).toBeUndefined();
@@ -346,7 +346,7 @@ describe('kg.project bindings (Phase 3)', () => {
 
   it('hybrid() returns FTS-only results (no cached embedding), gaps() returns array', async () => {
     const r1 = await executor.executeWithBindings(
-      "return kg.project.hybrid('bcrypt')",
+      "return pinakes.project.hybrid('bcrypt')",
       makeDeps()
     );
     expect(r1.error).toBeUndefined();
@@ -356,7 +356,7 @@ describe('kg.project bindings (Phase 3)', () => {
     expect(arr[0]).toHaveProperty('score');
 
     const r2 = await executor.executeWithBindings(
-      'return kg.project.gaps()',
+      'return pinakes.project.gaps()',
       makeDeps()
     );
     expect(r2.error).toBeUndefined();
@@ -369,9 +369,9 @@ describe('kg.project bindings (Phase 3)', () => {
 // ============================================================================
 
 describe('complex snippet (Phase 3)', () => {
-  it('kg.project.fts().filter().slice() chain works', async () => {
+  it('pinakes.project.fts().filter().slice() chain works', async () => {
     const result = await executor.executeWithBindings(
-      `return kg.project.fts('password')
+      `return pinakes.project.fts('password')
          .filter(r => r.source_uri.includes('auth'))
          .slice(0, 3)
          .map(r => ({ id: r.id, rank: r.rank }))`,
@@ -409,25 +409,25 @@ describe('budget.fit() in sandbox (Phase 3)', () => {
 // ============================================================================
 
 describe('backward compat (Phase 3)', () => {
-  it('kg.search() still works via handler', async () => {
+  it('pinakes.search() still works via handler', async () => {
     const res = await executeHandler({
-      code: "return kg.search('hashPassword').length",
+      code: "return pinakes.search('hashPassword').length",
     });
     const { envelope } = parseResponse(res);
     expect(envelope.result).toBeGreaterThanOrEqual(1);
   });
 
-  it('kg.get() still works via handler', async () => {
+  it('pinakes.get() still works via handler', async () => {
     // Get a chunk id first
     const searchRes = await executeHandler({
-      code: "return kg.search('hashPassword')[0]?.id",
+      code: "return pinakes.search('hashPassword')[0]?.id",
     });
     const { envelope: searchEnv } = parseResponse(searchRes);
     const chunkId = searchEnv.result as string;
     expect(chunkId).toBeTruthy();
 
     const getRes = await executeHandler({
-      code: `return kg.get('${chunkId}')`,
+      code: `return pinakes.get('${chunkId}')`,
     });
     const { envelope } = parseResponse(getRes);
     expect(envelope.result).not.toBeNull();

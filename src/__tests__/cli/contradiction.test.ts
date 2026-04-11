@@ -37,10 +37,10 @@ describe('cli/contradiction (Phase 8 H)', () => {
   let ctx: TestContext | null = null;
 
   beforeEach(() => {
-    const tmp = mkdtempSync(join(tmpdir(), 'kg-contradict-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'pinakes-contradict-'));
     const wikiDir = join(tmp, 'wiki');
     mkdirSync(wikiDir, { recursive: true });
-    const bundle = openDb(join(tmp, 'kg.db'));
+    const bundle = openDb(join(tmp, 'pinakes.db'));
     ctx = { tmp, wikiDir, bundle };
   });
 
@@ -56,7 +56,7 @@ describe('cli/contradiction (Phase 8 H)', () => {
     const c = ctx!;
     // Set last scan to now
     c.bundle.writer
-      .prepare(`INSERT INTO kg_meta (key, value) VALUES ('last_contradiction_scan', ?)`)
+      .prepare(`INSERT INTO pinakes_meta (key, value) VALUES ('last_contradiction_scan', ?)`)
       .run(String(Date.now()));
 
     const result = await contradictionScan({
@@ -74,7 +74,7 @@ describe('cli/contradiction (Phase 8 H)', () => {
     const c = ctx!;
     // Set last scan to 2 hours ago
     c.bundle.writer
-      .prepare(`INSERT INTO kg_meta (key, value) VALUES ('last_contradiction_scan', ?)`)
+      .prepare(`INSERT INTO pinakes_meta (key, value) VALUES ('last_contradiction_scan', ?)`)
       .run(String(Date.now() - 2 * 60 * 60 * 1000));
 
     const result = await contradictionScan({

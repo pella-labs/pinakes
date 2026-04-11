@@ -1,11 +1,10 @@
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { closeDb, openDb } from '../db/client.js';
+import { resolveCliDbPath } from '../paths.js';
 
 /**
- * `kg audit --tail` — tail the kg_audit table for a scope's DB.
+ * `pinakes audit --tail` — tail the pinakes_audit table for a scope's DB.
  *
  * Reads the most recent N audit rows (default 20) and prints them as
  * newline-delimited JSON. Strictly read-only.
@@ -14,9 +13,11 @@ import { closeDb, openDb } from '../db/client.js';
 export interface AuditOptions {
   /** Number of rows to show (default 20) */
   n?: number;
-  /** Project DB path */
+  /** Project root directory (default: cwd) */
+  projectRoot?: string;
+  /** Project DB path override */
   dbPath?: string;
-  /** Wiki path (used to derive default dbPath) */
+  /** Wiki path (unused in new layout, kept for backwards compat) */
   wikiPath?: string;
   /** Personal DB path */
   profileDbPath?: string;
@@ -37,7 +38,7 @@ export interface AuditRow {
 export function auditCommand(options: AuditOptions): AuditRow[] {
   const scope = options.scope ?? 'project';
   const n = options.n ?? 20;
-  const dbPath = resolveDbPath(options, scope);
+  const dbPath = resolveCliDbPath(options, scope);
 
   if (!existsSync(dbPath)) {
     return [];
@@ -48,7 +49,7 @@ export function auditCommand(options: AuditOptions): AuditRow[] {
     const rows = bundle.writer
       .prepare(
         `SELECT id, ts, tool_name, scope_requested, caller_ctx, response_tokens, error
-         FROM kg_audit ORDER BY id DESC LIMIT ?`
+         FROM pinakes_audit ORDER BY id DESC LIMIT ?`
       )
       .all(n) as AuditRow[];
     return rows.reverse(); // chronological order
@@ -62,22 +63,3 @@ export function renderAudit(rows: AuditRow[]): string {
   return rows.map((r) => JSON.stringify(r)).join('\n');
 }
 
-// ----------------------------------------------------------------------------
-// Path helpers (shared pattern with status.ts)
-// ----------------------------------------------------------------------------
-
-function resolveDbPath(options: AuditOptions, scope: 'project' | 'personal'): string {
-  if (scope === 'personal') {
-    if (options.profileDbPath) return resolveAbs(options.profileDbPath);
-    const env = process.env.KG_PROFILE_PATH;
-    const profileDir = env ? resolveAbs(env) : resolve(homedir(), '.pharos/profile');
-    return resolve(profileDir, 'kg.db');
-  }
-  if (options.dbPath) return resolveAbs(options.dbPath);
-  if (options.wikiPath) return resolve(dirname(resolveAbs(options.wikiPath)), '.pinakes', 'pinakes.db');
-  return resolve(process.cwd(), '.pinakes', 'pinakes.db');
-}
-
-function resolveAbs(p: string): string {
-  return isAbsolute(p) ? p : resolve(process.cwd(), p);
-}

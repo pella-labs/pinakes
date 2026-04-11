@@ -2,23 +2,23 @@ import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, index, primaryKey } from 'drizzle-orm/sqlite-core';
 
 /**
- * KG-MCP Drizzle schema (presearch.md §2.3, CLAUDE.md §Database Rules).
+ * Pinakes Drizzle schema (presearch.md §2.3, CLAUDE.md §Database Rules).
  *
- * 8 logical tables + `kg_meta` for schema versioning. Two of the eight are
- * virtual tables (`kg_chunks_fts`, `kg_chunks_vec`) that drizzle-kit can't
+ * 8 logical tables + `pinakes_meta` for schema versioning. Two of the eight are
+ * virtual tables (`pinakes_chunks_fts`, `pinakes_chunks_vec`) that drizzle-kit can't
  * model — they're created via raw SQL appended to the initial migration in
  * src/db/migrations. The drizzle code below covers the 7 regular tables
- * plus kg_meta.
+ * plus pinakes_meta.
  *
  * Invariants this schema MUST preserve:
  *
- * - `kg_nodes.id` is `sha1(scope + ':' + source_uri + ':' + section_path)`,
+ * - `pinakes_nodes.id` is `sha1(scope + ':' + source_uri + ':' + section_path)`,
  *   set by the ingester (NOT auto-generated). Re-ingesting the same
  *   markdown produces identical ids — Phase 2's idempotent upsert relies
  *   on this. The DB never sees the hashing logic; it just stores the value
  *   and enforces uniqueness via the PK.
  *
- * - `kg_chunks.id` is `sha1(node_id + ':' + chunk_index)`, same idea.
+ * - `pinakes_chunks.id` is `sha1(node_id + ':' + chunk_index)`, same idea.
  *
  * - `chunk_sha = sha1(chunk_text)` is the LOAD-BEARING field for the
  *   per-chunk skip-unchanged optimization (CLAUDE.md §Database Rules #3,
@@ -28,10 +28,10 @@ import { sqliteTable, text, integer, index, primaryKey } from 'drizzle-orm/sqlit
  *   ~50ms = 3s of blocking work that competes with the active coding LLM
  *   for Ollama. Do not remove this column.
  *
- * - `last_accessed_at` on `kg_nodes` exists for the Phase 5 personal-KG
+ * - `last_accessed_at` on `pinakes_nodes` exists for the Phase 5 personal-KG
  *   LRU eviction (Loop 6.5 A2). Phase 2 just stamps it on insert/update.
  *
- * - `source_sha` on `kg_nodes` is the file-level hash; staleness detection
+ * - `source_sha` on `pinakes_nodes` is the file-level hash; staleness detection
  *   on the query path compares this against the current on-disk hash.
  *
  * - All FK relationships use `ON DELETE CASCADE` so deleting a node cleans
@@ -41,7 +41,7 @@ import { sqliteTable, text, integer, index, primaryKey } from 'drizzle-orm/sqlit
  */
 
 // ----------------------------------------------------------------------------
-// kg_meta — schema versioning + bookkeeping
+// pinakes_meta — schema versioning + bookkeeping
 // ----------------------------------------------------------------------------
 
 /**
@@ -53,13 +53,13 @@ import { sqliteTable, text, integer, index, primaryKey } from 'drizzle-orm/sqlit
  * (in the worst case for sqlite-vec breaking changes) drop + rebuild the
  * vec virtual table from markdown.
  */
-export const kgMeta = sqliteTable('kg_meta', {
+export const pinakesMeta = sqliteTable('pinakes_meta', {
   key: text('key').primaryKey(),
   value: text('value'),
 });
 
 // ----------------------------------------------------------------------------
-// kg_nodes — markdown sections + concept entities (Phase 2 only writes
+// pinakes_nodes — markdown sections + concept entities (Phase 2 only writes
 // kind='section' rows; Phase 4 adds entities, Phase 6 adds gaps)
 // ----------------------------------------------------------------------------
 
@@ -76,12 +76,12 @@ export const kgMeta = sqliteTable('kg_meta', {
  * Empty string for top-of-file content above any heading.
  *
  * `content` stores the full section markdown (heading + body). Chunks are
- * derived from this and stored separately in kg_chunks. We keep both because
- * `kg_execute` callers may want the whole section (`kg.get(node_id)`) instead
+ * derived from this and stored separately in pinakes_chunks. We keep both because
+ * `pinakes_execute` callers may want the whole section (`pinakes.get(node_id)`) instead
  * of paragraph-sized chunks.
  */
-export const kgNodes = sqliteTable(
-  'kg_nodes',
+export const pinakesNodes = sqliteTable(
+  'pinakes_nodes',
   {
     /** sha1(scope + ':' + source_uri + ':' + section_path), set by ingester */
     id: text('id').primaryKey(),
@@ -111,13 +111,13 @@ export const kgNodes = sqliteTable(
     lastAccessedAt: integer('last_accessed_at').notNull(),
   },
   (t) => [
-    index('idx_kg_nodes_scope_uri').on(t.scope, t.sourceUri),
-    index('idx_kg_nodes_last_accessed').on(t.lastAccessedAt),
+    index('idx_pinakes_nodes_scope_uri').on(t.scope, t.sourceUri),
+    index('idx_pinakes_nodes_last_accessed').on(t.lastAccessedAt),
   ]
 );
 
 // ----------------------------------------------------------------------------
-// kg_edges — wikilinks, citations, supersedes, etc. (Phase 4+ writes; Phase 2
+// pinakes_edges — wikilinks, citations, supersedes, etc. (Phase 4+ writes; Phase 2
 // just creates the table for migration completeness)
 // ----------------------------------------------------------------------------
 
@@ -130,27 +130,27 @@ export const kgNodes = sqliteTable(
  * markdown parsing. The table exists now so the migration is complete and
  * Phase 4 doesn't have to add it as a separate migration.
  */
-export const kgEdges = sqliteTable(
-  'kg_edges',
+export const pinakesEdges = sqliteTable(
+  'pinakes_edges',
   {
     srcId: text('src_id')
       .notNull()
-      .references(() => kgNodes.id, { onDelete: 'cascade' }),
+      .references(() => pinakesNodes.id, { onDelete: 'cascade' }),
     dstId: text('dst_id')
       .notNull()
-      .references(() => kgNodes.id, { onDelete: 'cascade' }),
+      .references(() => pinakesNodes.id, { onDelete: 'cascade' }),
     /** 'wikilink' | 'cites' | 'supersedes' | 'contradicts' | 'mentions' | 'derived_from' */
     edgeKind: text('edge_kind').notNull(),
   },
   (t) => [
     primaryKey({ columns: [t.srcId, t.dstId, t.edgeKind] }),
-    index('idx_kg_edges_src').on(t.srcId),
-    index('idx_kg_edges_dst').on(t.dstId),
+    index('idx_pinakes_edges_src').on(t.srcId),
+    index('idx_pinakes_edges_dst').on(t.dstId),
   ]
 );
 
 // ----------------------------------------------------------------------------
-// kg_chunks — paragraph-level splits of nodes
+// pinakes_chunks — paragraph-level splits of nodes
 // ----------------------------------------------------------------------------
 
 /**
@@ -160,8 +160,8 @@ export const kgEdges = sqliteTable(
  *
  * The implicit SQLite `rowid` (auto-assigned for tables without
  * INTEGER PRIMARY KEY) is what FTS5 and sqlite-vec join on:
- *   - `kg_chunks_fts` is `content='kg_chunks', content_rowid='rowid'`
- *   - `kg_chunks_vec.rowid` matches `kg_chunks.rowid`
+ *   - `pinakes_chunks_fts` is `content='pinakes_chunks', content_rowid='rowid'`
+ *   - `pinakes_chunks_vec.rowid` matches `pinakes_chunks.rowid`
  *
  * `chunk_sha = sha1(text)` is the per-chunk skip-unchanged key. On a
  * file rewrite, the ingester compares each new chunk's chunk_sha against
@@ -170,15 +170,15 @@ export const kgEdges = sqliteTable(
  * re-embedded. This is the load-bearing optimization for Pharos's
  * whole-file-rewrite-per-turn pattern (CLAUDE.md §Database Rules #3).
  */
-export const kgChunks = sqliteTable(
-  'kg_chunks',
+export const pinakesChunks = sqliteTable(
+  'pinakes_chunks',
   {
     /** sha1(node_id + ':' + chunk_index) */
     id: text('id').primaryKey(),
-    /** FK to kg_nodes; cascade-delete cleans up chunks when a node goes away */
+    /** FK to pinakes_nodes; cascade-delete cleans up chunks when a node goes away */
     nodeId: text('node_id')
       .notNull()
-      .references(() => kgNodes.id, { onDelete: 'cascade' }),
+      .references(() => pinakesNodes.id, { onDelete: 'cascade' }),
     /** 0-based position within the node's chunk list */
     chunkIndex: integer('chunk_index').notNull(),
     /** The chunk's text content */
@@ -190,11 +190,11 @@ export const kgChunks = sqliteTable(
     /** Unix epoch ms of insert */
     createdAt: integer('created_at').notNull(),
   },
-  (t) => [index('idx_kg_chunks_node').on(t.nodeId)]
+  (t) => [index('idx_pinakes_chunks_node').on(t.nodeId)]
 );
 
 // ----------------------------------------------------------------------------
-// kg_log — append-only event log (Karpathy log.md materialized)
+// pinakes_log — append-only event log (Karpathy log.md materialized)
 // ----------------------------------------------------------------------------
 
 /**
@@ -204,10 +204,10 @@ export const kgChunks = sqliteTable(
  *   - `'rebuild:start' | 'rebuild:done'` — full-rebuild markers
  *
  * `payload` is opaque JSON shaped per `kind`. The reader is the LLM via
- * `kg.log.recent(n, opts)` in Phase 4+; Phase 2 just appends.
+ * `pinakes.log.recent(n, opts)` in Phase 4+; Phase 2 just appends.
  */
-export const kgLog = sqliteTable(
-  'kg_log',
+export const pinakesLog = sqliteTable(
+  'pinakes_log',
   {
     id: integer('id').primaryKey({ autoIncrement: true }),
     /** Unix epoch ms */
@@ -221,11 +221,11 @@ export const kgLog = sqliteTable(
     /** Opaque JSON payload, shape per `kind` */
     payload: text('payload'),
   },
-  (t) => [index('idx_kg_log_ts').on(sql`${t.ts} DESC`)]
+  (t) => [index('idx_pinakes_log_ts').on(sql`${t.ts} DESC`)]
 );
 
 // ----------------------------------------------------------------------------
-// kg_gaps — detected concept gaps (Phase 6+ writes; Phase 2 creates table)
+// pinakes_gaps — detected concept gaps (Phase 6+ writes; Phase 2 creates table)
 // ----------------------------------------------------------------------------
 
 /**
@@ -236,7 +236,7 @@ export const kgLog = sqliteTable(
  * multiple turns. `resolved_at` is set when a gap is closed (either by
  * the LLM writing about the topic or by a manual dismissal).
  */
-export const kgGaps = sqliteTable('kg_gaps', {
+export const pinakesGaps = sqliteTable('pinakes_gaps', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   scope: text('scope').notNull(),
   topic: text('topic').notNull(),
@@ -246,7 +246,7 @@ export const kgGaps = sqliteTable('kg_gaps', {
 });
 
 // ----------------------------------------------------------------------------
-// kg_audit — every tool call (Phase 5 wires writes; Phase 2 creates table)
+// pinakes_audit — every tool call (Phase 5 wires writes; Phase 2 creates table)
 // ----------------------------------------------------------------------------
 
 /**
@@ -255,12 +255,12 @@ export const kgGaps = sqliteTable('kg_gaps', {
  * (CLAUDE.md §Security #7). Phase 2 creates the table.
  *
  * NB: per CLAUDE.md §Security #7, the JSONL mirror path differs by scope —
- * project rows mirror to `.pharos/kg-audit.jsonl` (in the repo, safe for
- * `git add .`), personal/both rows mirror to `~/.pharos/profile/kg-audit.jsonl`.
- * Personal-scope audit rows go to a separate kg_audit table in the personal
+ * project rows mirror to `~/.pinakes/projects/<mangled>/audit.jsonl`,
+ * personal/both rows mirror to `~/.pinakes/audit.jsonl`.
+ * Personal-scope audit rows go to a separate pinakes_audit table in the personal
  * DB, never the project DB. This split is enforced at the app layer.
  */
-export const kgAudit = sqliteTable('kg_audit', {
+export const pinakesAudit = sqliteTable('pinakes_audit', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   ts: integer('ts').notNull(),
   toolName: text('tool_name').notNull(),
@@ -274,31 +274,31 @@ export const kgAudit = sqliteTable('kg_audit', {
 // Type exports — used by repository.ts and the ingester
 // ----------------------------------------------------------------------------
 
-export type KgNode = typeof kgNodes.$inferSelect;
-export type NewKgNode = typeof kgNodes.$inferInsert;
-export type KgChunk = typeof kgChunks.$inferSelect;
-export type NewKgChunk = typeof kgChunks.$inferInsert;
-export type KgEdge = typeof kgEdges.$inferSelect;
-export type NewKgEdge = typeof kgEdges.$inferInsert;
-export type KgLogRow = typeof kgLog.$inferSelect;
-export type NewKgLogRow = typeof kgLog.$inferInsert;
+export type PinakesNode = typeof pinakesNodes.$inferSelect;
+export type NewPinakesNode = typeof pinakesNodes.$inferInsert;
+export type PinakesChunk = typeof pinakesChunks.$inferSelect;
+export type NewPinakesChunk = typeof pinakesChunks.$inferInsert;
+export type PinakesEdge = typeof pinakesEdges.$inferSelect;
+export type NewPinakesEdge = typeof pinakesEdges.$inferInsert;
+export type PinakesLogRow = typeof pinakesLog.$inferSelect;
+export type NewPinakesLogRow = typeof pinakesLog.$inferInsert;
 
 /**
  * The list of all schema-managed tables, useful for the schema test that
  * verifies the migration creates every expected table.
  */
-export const KG_TABLES = [
-  'kg_meta',
-  'kg_nodes',
-  'kg_edges',
-  'kg_chunks',
-  'kg_log',
-  'kg_gaps',
-  'kg_audit',
+export const PINAKES_TABLES = [
+  'pinakes_meta',
+  'pinakes_nodes',
+  'pinakes_edges',
+  'pinakes_chunks',
+  'pinakes_log',
+  'pinakes_gaps',
+  'pinakes_audit',
 ] as const;
 
 /**
  * The two virtual tables created via raw SQL in the migration (drizzle-kit
  * doesn't emit virtual table DDL). Schema test verifies they exist.
  */
-export const KG_VIRTUAL_TABLES = ['kg_chunks_fts', 'kg_chunks_vec'] as const;
+export const PINAKES_VIRTUAL_TABLES = ['pinakes_chunks_fts', 'pinakes_chunks_vec'] as const;

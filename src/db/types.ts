@@ -1,5 +1,5 @@
 /**
- * Shared types for KG-MCP query results.
+ * Shared types for Pinakes query results.
  *
  * Phase 2 introduces this file to decouple the tool handlers from any
  * single store implementation. Phase 1's `MemoryStore` defined `Chunk`
@@ -14,7 +14,7 @@ export type Scope = 'project' | 'personal' | 'both';
  * A retrieval-shaped chunk. Mirrors what Phase 1's `MemoryStore` returned
  * so the existing 13 spike tests stay green across the swap. Field shape
  * is locked — adding fields is fine; renaming/removing breaks the
- * sandbox host bindings (`kg.search` returns `{id, text, source_uri}`)
+ * sandbox host bindings (`pinakes.search` returns `{id, text, source_uri}`)
  * and the spike test asserting that shape.
  */
 export interface Chunk {

@@ -1,11 +1,10 @@
 import { existsSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { closeDb, openDb } from '../db/client.js';
+import { resolveCliDbPath } from '../paths.js';
 
 /**
- * `kg export --scope <s> [--out file.json]` — dump a scope's nodes + edges
+ * `pinakes export --scope <s> [--out file.json]` — dump a scope's nodes + edges
  * as JSON for backup / migration / debugging.
  *
  * Output format:
@@ -37,7 +36,7 @@ export interface ExportData {
 }
 
 export function exportCommand(options: ExportOptions): ExportData {
-  const dbPath = resolveDbPath(options, options.scope);
+  const dbPath = resolveCliDbPath(options, options.scope);
 
   if (!existsSync(dbPath)) {
     return {
@@ -52,19 +51,19 @@ export function exportCommand(options: ExportOptions): ExportData {
   const bundle = openDb(dbPath, { runMigrations: false });
   try {
     const nodes = bundle.writer
-      .prepare(`SELECT * FROM kg_nodes WHERE scope = ?`)
+      .prepare(`SELECT * FROM pinakes_nodes WHERE scope = ?`)
       .all(options.scope);
     const edges = bundle.writer
       .prepare(
-        `SELECT e.* FROM kg_edges e
-         JOIN kg_nodes n ON e.src_id = n.id
+        `SELECT e.* FROM pinakes_edges e
+         JOIN pinakes_nodes n ON e.src_id = n.id
          WHERE n.scope = ?`
       )
       .all(options.scope);
     const chunks = bundle.writer
       .prepare(
-        `SELECT c.* FROM kg_chunks c
-         JOIN kg_nodes n ON c.node_id = n.id
+        `SELECT c.* FROM pinakes_chunks c
+         JOIN pinakes_nodes n ON c.node_id = n.id
          WHERE n.scope = ?`
       )
       .all(options.scope);
@@ -93,22 +92,3 @@ export function renderExport(data: ExportData, outPath?: string): string {
   return line;
 }
 
-// ----------------------------------------------------------------------------
-// Path helpers
-// ----------------------------------------------------------------------------
-
-function resolveDbPath(options: ExportOptions, scope: 'project' | 'personal'): string {
-  if (scope === 'personal') {
-    if (options.profileDbPath) return resolveAbs(options.profileDbPath);
-    const env = process.env.KG_PROFILE_PATH;
-    const profileDir = env ? resolveAbs(env) : resolve(homedir(), '.pharos/profile');
-    return resolve(profileDir, 'kg.db');
-  }
-  if (options.dbPath) return resolveAbs(options.dbPath);
-  if (options.wikiPath) return resolve(dirname(resolveAbs(options.wikiPath)), '.pinakes', 'pinakes.db');
-  return resolve(process.cwd(), '.pinakes', 'pinakes.db');
-}
-
-function resolveAbs(p: string): string {
-  return isAbsolute(p) ? p : resolve(process.cwd(), p);
-}

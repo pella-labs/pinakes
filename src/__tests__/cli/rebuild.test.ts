@@ -11,13 +11,13 @@ import { CountingEmbedder, getDefaultEmbedder } from '../../retrieval/embedder.j
 import { __resetSingleFlightForTests } from '../../ingest/ingester.js';
 
 /**
- * `kg rebuild` CLI tests for KG-MCP Phase 2.
+ * `pinakes rebuild` CLI tests for Pinakes-MCP Phase 2.
  *
  * Three tests:
  *   1. Rebuild against the fixture wiki populates all 8 tables and completes
  *      in <10s (PRD acceptance criteria #1 + #5)
  *   2. sqlite-vec virtual table accepts a 384-dim Float32Array insert (PRD #9)
- *      — verified by counting kg_chunks_vec rows after rebuild
+ *      — verified by counting pinakes_chunks_vec rows after rebuild
  *   3. FTS5 virtual table populates on chunk insert (PRD #8) — verified by
  *      MATCH-querying for "hashpassword" and getting ≥1 result
  */
@@ -36,7 +36,7 @@ describe('cli/rebuild (Phase 2)', () => {
 
   beforeEach(() => {
     __resetSingleFlightForTests();
-    const tmp = mkdtempSync(join(tmpdir(), 'kg-rebuild-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'pinakes-rebuild-'));
     const wikiDir = join(tmp, 'wiki');
     mkdirSync(wikiDir, { recursive: true });
 
@@ -45,7 +45,7 @@ describe('cli/rebuild (Phase 2)', () => {
       copyFileSync(join(FIXTURE_DIR, name), join(wikiDir, name));
     }
 
-    ctx = { tmp, wikiDir, dbPath: join(tmp, 'kg.db') };
+    ctx = { tmp, wikiDir, dbPath: join(tmp, 'pinakes.db') };
   });
 
   afterEach(() => {
@@ -87,17 +87,17 @@ describe('cli/rebuild (Phase 2)', () => {
         const tableCounts = (table: string): number =>
           (bundle.writer.prepare(`SELECT count(*) AS c FROM ${table}`).get() as { c: number }).c;
 
-        expect(tableCounts('kg_meta')).toBeGreaterThanOrEqual(1); // schema_version
-        expect(tableCounts('kg_nodes')).toBeGreaterThanOrEqual(3);
-        expect(tableCounts('kg_chunks')).toBe(project.chunks_added);
-        expect(tableCounts('kg_chunks_fts')).toBe(project.chunks_added);
-        expect(tableCounts('kg_chunks_vec')).toBe(project.chunks_added);
-        expect(tableCounts('kg_log')).toBeGreaterThanOrEqual(3); // one per ingest
-        // kg_edges, kg_audit are created but not written by Phase 2
-        // kg_gaps may be populated by Phase 6 gap detection during ingest
-        expect(tableCounts('kg_edges')).toBe(0);
-        expect(tableCounts('kg_gaps')).toBeGreaterThanOrEqual(0);
-        expect(tableCounts('kg_audit')).toBe(0);
+        expect(tableCounts('pinakes_meta')).toBeGreaterThanOrEqual(1); // schema_version
+        expect(tableCounts('pinakes_nodes')).toBeGreaterThanOrEqual(3);
+        expect(tableCounts('pinakes_chunks')).toBe(project.chunks_added);
+        expect(tableCounts('pinakes_chunks_fts')).toBe(project.chunks_added);
+        expect(tableCounts('pinakes_chunks_vec')).toBe(project.chunks_added);
+        expect(tableCounts('pinakes_log')).toBeGreaterThanOrEqual(3); // one per ingest
+        // pinakes_edges, pinakes_audit are created but not written by Phase 2
+        // pinakes_gaps may be populated by Phase 6 gap detection during ingest
+        expect(tableCounts('pinakes_edges')).toBe(0);
+        expect(tableCounts('pinakes_gaps')).toBeGreaterThanOrEqual(0);
+        expect(tableCounts('pinakes_audit')).toBe(0);
       } finally {
         closeDb(bundle);
       }
@@ -119,12 +119,12 @@ describe('cli/rebuild (Phase 2)', () => {
       const bundle = openDb(c.dbPath);
       try {
         const vecCount = bundle.writer
-          .prepare('SELECT count(*) AS c FROM kg_chunks_vec')
+          .prepare('SELECT count(*) AS c FROM pinakes_chunks_vec')
           .get() as { c: number };
         expect(vecCount.c).toBeGreaterThan(0);
 
         const chunkCount = bundle.writer
-          .prepare('SELECT count(*) AS c FROM kg_chunks')
+          .prepare('SELECT count(*) AS c FROM pinakes_chunks')
           .get() as { c: number };
 
         // One vec row per chunk row — the ingester always pairs them
@@ -138,11 +138,11 @@ describe('cli/rebuild (Phase 2)', () => {
         for (let i = 0; i < 384; i++) f32[i] = i / 384;
 
         bundle.writer
-          .prepare('INSERT INTO kg_chunks_vec(rowid, embedding) VALUES (?, ?)')
+          .prepare('INSERT INTO pinakes_chunks_vec(rowid, embedding) VALUES (?, ?)')
           .run(BigInt(999999), buf);
 
         const after = bundle.writer
-          .prepare('SELECT count(*) AS c FROM kg_chunks_vec')
+          .prepare('SELECT count(*) AS c FROM pinakes_chunks_vec')
           .get() as { c: number };
         expect(after.c).toBe(vecCount.c + 1);
       } finally {
@@ -170,23 +170,23 @@ describe('cli/rebuild (Phase 2)', () => {
         // (single token, not split on case).
         const hits = bundle.writer
           .prepare(
-            "SELECT count(*) AS c FROM kg_chunks_fts WHERE kg_chunks_fts MATCH 'hashpassword'"
+            "SELECT count(*) AS c FROM pinakes_chunks_fts WHERE pinakes_chunks_fts MATCH 'hashpassword'"
           )
           .get() as { c: number };
         expect(hits.c).toBeGreaterThanOrEqual(1);
 
         // bcrypt also lives in auth.md — same fixture content the spike tests use
         const bcryptHits = bundle.writer
-          .prepare("SELECT count(*) AS c FROM kg_chunks_fts WHERE kg_chunks_fts MATCH 'bcrypt'")
+          .prepare("SELECT count(*) AS c FROM pinakes_chunks_fts WHERE pinakes_chunks_fts MATCH 'bcrypt'")
           .get() as { c: number };
         expect(bcryptHits.c).toBeGreaterThanOrEqual(1);
 
-        // FTS5 row count matches kg_chunks row count (the trigger keeps them in sync)
+        // FTS5 row count matches pinakes_chunks row count (the trigger keeps them in sync)
         const ftsTotal = bundle.writer
-          .prepare('SELECT count(*) AS c FROM kg_chunks_fts')
+          .prepare('SELECT count(*) AS c FROM pinakes_chunks_fts')
           .get() as { c: number };
         const chunkTotal = bundle.writer
-          .prepare('SELECT count(*) AS c FROM kg_chunks')
+          .prepare('SELECT count(*) AS c FROM pinakes_chunks')
           .get() as { c: number };
         expect(ftsTotal.c).toBe(chunkTotal.c);
       } finally {

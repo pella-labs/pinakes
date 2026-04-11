@@ -9,18 +9,18 @@ import { buildEnvelope, QueryTimer, type Scope } from '../envelope.js';
 import type { BindingDeps } from '../../sandbox/bindings/install.js';
 
 /**
- * `kg_execute` — code-mode tool. The LLM writes a short JS snippet, we run
- * it inside the QuickJS sandbox against the `kg` bindings, and return the
+ * `execute` — code-mode tool. The LLM writes a short JS snippet, we run
+ * it inside the QuickJS sandbox against the `pinakes` bindings, and return the
  * (budget-shaped) result.
  *
- * Phase 3: full `kg.project.*` binding surface via warm pool. Backward-compat
- * `kg.search()`/`kg.get()` aliases remain.
+ * Phase 3: full `pinakes.project.*` binding surface via warm pool. Backward-compat
+ * `pinakes.search()`/`pinakes.get()` aliases remain.
  */
 
-const KG_EXECUTE_TYPES = `
+const EXECUTE_TYPES = `
 type Node = { id: string; source_uri: string; title: string | null; section_path: string };
 type Chunk = Node & { text: string; node_id: string };
-declare const kg: {
+declare const pinakes: {
   search(query: string): Chunk[];
   get(id: string): Chunk | null;
   project: {
@@ -43,18 +43,18 @@ declare const budget: { fit(items: unknown[], maxTokens?: number): unknown[] };
 declare const logger: { log(...args: unknown[]): void };
 `.trim();
 
-export const kgExecuteInputShape = {
+export const executeInputShape = {
   code: z
     .string()
     .min(1)
     .describe(
       'JavaScript to run inside the sandbox. The sandbox is QuickJS with ' +
         '`eval`, `Function`, `fetch`, `require`, `process`, and `constructor` ' +
-        'removed. You have `kg.project.*` for FTS, graph traversal, log ' +
+        'removed. You have `pinakes.project.*` for FTS, graph traversal, log ' +
         'queries, and wiki writes (write/append/remove), plus `budget.fit()` ' +
         'for token-aware truncation and `logger.log()` captured into ' +
         '`response.logs`. Return a value.\n' +
-        KG_EXECUTE_TYPES
+        EXECUTE_TYPES
     ),
   max_tokens: z
     .number()
@@ -79,26 +79,26 @@ export const kgExecuteInputShape = {
     .enum(['project', 'personal', 'both'])
     .optional()
     .describe(
-      'Which KG bindings to inject. "project" (default) installs kg.project, ' +
-        '"personal" installs kg.personal, "both" installs both namespaces.'
+      'Which bindings to inject. "project" (default) installs pinakes.project, ' +
+        '"personal" installs pinakes.personal, "both" installs both namespaces.'
     ),
 };
 
-export const kgExecuteToolConfig = {
-  title: 'Run JS in the knowledge-graph sandbox',
+export const executeToolConfig = {
+  title: 'Query or update the project knowledge base',
   description:
-    'Run JS in the KG sandbox. Indexes a curated project wiki (not source code).\n\n' +
-    'Read: index() for TOC, get(id) for content, hybrid() for search, ' +
-    'neighbors() for graph, pagerank() for hub nodes, components() for clusters.\n' +
-    'Write: write(path, content), append(entry), remove(path). ' +
-    'Use compiled-truth above --- and timeline below.\n' +
-    'Gaps: gaps() finds missing topics to fill with write().\n\n' +
-    '64MB memory, 2s timeout. No network/eval.\n\n' +
-    KG_EXECUTE_TYPES,
-  inputSchema: kgExecuteInputShape,
+    'Run JS against the project knowledge base for advanced operations.\n\n' +
+    'Read: index() for TOC, get(id) for full content, hybrid() for semantic search, ' +
+    'neighbors() for related topics, pagerank() for key concepts, components() for topic clusters.\n' +
+    'Write: write(path, content), append(entry), remove(path) to capture new knowledge.\n' +
+    'Gaps: gaps() finds under-documented areas.\n\n' +
+    'Use this over `search` when you need to chain queries, browse the knowledge graph, ' +
+    'or write back what you learn. 64MB memory, 2s timeout. No network/eval.\n\n' +
+    EXECUTE_TYPES,
+  inputSchema: executeInputShape,
 } as const;
 
-export interface KgExecuteDeps {
+export interface ExecuteDeps {
   repository: Repository;
   executor: QuickJSExecutor;
   bundle: DbBundle;
@@ -109,10 +109,10 @@ export interface KgExecuteDeps {
 }
 
 /**
- * Build the `kg_execute` handler. Phase 3 path: uses `executeWithBindings`
- * with the full `kg.project.*` surface via the warm pool.
+ * Build the `execute` handler. Phase 3 path: uses `executeWithBindings`
+ * with the full `pinakes.project.*` surface via the warm pool.
  */
-export function makeKgExecuteHandler(deps: KgExecuteDeps) {
+export function makeExecuteHandler(deps: ExecuteDeps) {
   return async (args: {
     code: string;
     max_tokens?: number;
@@ -128,8 +128,8 @@ export function makeKgExecuteHandler(deps: KgExecuteDeps) {
       const envelope = buildEnvelope({
         result: {
           error:
-            'personal scope requested but no personal KG is configured — ' +
-            'set KG_PROFILE_PATH or pass --profile-path',
+            'personal scope requested but no personal wiki is configured — ' +
+            'create a personal wiki at ~/.pinakes/wiki/ or pass --profile-path',
         },
         tokensBudgeted: maxTokens,
         tokensUsed: 0,

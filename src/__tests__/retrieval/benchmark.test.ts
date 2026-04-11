@@ -66,7 +66,7 @@ let tmpRoot: string;
 beforeAll(async () => {
   __resetSingleFlightForTests();
 
-  tmpRoot = mkdtempSync(join(tmpdir(), 'kg-bench-'));
+  tmpRoot = mkdtempSync(join(tmpdir(), 'pinakes-bench-'));
   const wikiDir = join(tmpRoot, 'wiki');
   mkdirSync(wikiDir, { recursive: true });
 
@@ -75,7 +75,7 @@ beforeAll(async () => {
     writeFileSync(join(wikiDir, `topic-${i}.md`), generateMarkdown(i));
   }
 
-  bundle = openDb(join(tmpRoot, 'kg.db'));
+  bundle = openDb(join(tmpRoot, 'pinakes.db'));
   embedder = new CountingEmbedder(getDefaultEmbedder());
   await embedder.warmup();
 
@@ -87,7 +87,7 @@ beforeAll(async () => {
   // Verify chunk count
   const reader = nextReader(bundle);
   const count = reader
-    .prepare<[], { c: number }>(`SELECT count(*) AS c FROM kg_chunks`)
+    .prepare<[], { c: number }>(`SELECT count(*) AS c FROM pinakes_chunks`)
     .get()!.c;
   console.error(`[benchmark] ingested ${count} chunks from 100 files`);
 }, 300_000); // 5 min timeout for ingest with embeddings

@@ -16,7 +16,7 @@ interface MdastNode {
 }
 
 /**
- * Markdown → section parser for KG-MCP Phase 2.
+ * Markdown → section parser for Pinakes Phase 2.
  *
  * Parses a markdown file into a flat array of `SectionNode` objects, one
  * per ATX heading (`#`, `##`, …) plus an optional pre-heading section for
@@ -25,7 +25,7 @@ interface MdastNode {
  *
  * **Why mdast?** Phase 1 used a `\n\n` regex split that lost all heading
  * structure. The Karpathy two-level wiki has nested H1/H2/H3 sections, and
- * the LLM querying via `kg.search` benefits from being able to identify
+ * the LLM querying via `search` benefits from being able to identify
  * "this chunk lives under H2 'Login flow' which lives under H1 'Authentication'".
  * The `section_path` field captures that hierarchy.
  *

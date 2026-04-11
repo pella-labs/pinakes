@@ -12,8 +12,8 @@ import { CountingEmbedder, getDefaultEmbedder } from '../retrieval/embedder.js';
 import { hybridSearch } from '../retrieval/hybrid.js';
 import { ftsQuery } from '../retrieval/fts.js';
 import { vecQuery } from '../retrieval/vec.js';
-import { makeKgSearchHandler } from '../mcp/tools/search.js';
-import { makeKgExecuteHandler } from '../mcp/tools/execute.js';
+import { makeSearchHandler } from '../mcp/tools/search.js';
+import { makeExecuteHandler } from '../mcp/tools/execute.js';
 import { QuickJSExecutor } from '../sandbox/executor.js';
 import { countTokens } from '../gate/budget.js';
 
@@ -26,8 +26,8 @@ import { countTokens } from '../gate/budget.js';
  *   3. FTS query latency (p50, p95)
  *   4. Vector query latency (p50, p95)
  *   5. Hybrid query latency (p50, p95)
- *   6. kg_search tool handler latency (p50, p95)
- *   7. kg_execute tool handler latency (p50, p95)
+ *   6. search tool handler latency (p50, p95)
+ *   7. execute tool handler latency (p50, p95)
  *   8. Budget gate behavior at scale
  *
  * These are slow tests (~5-15 min total). Run explicitly:
@@ -103,9 +103,9 @@ function describeBenchmark(name: string, wikiDir: string, timeout: number) {
 
     beforeAll(async () => {
       __resetSingleFlightForTests();
-      const tmp = mkdtempSync(join(tmpdir(), `kg-bench-${name}-`));
+      const tmp = mkdtempSync(join(tmpdir(), `pinakes-bench-${name}-`));
       const tmpWiki = join(tmp, 'wiki');
-      const dbPath = join(tmp, 'kg.db');
+      const dbPath = join(tmp, 'pinakes.db');
 
       // Copy wiki to temp dir so the manifest doesn't pollute the fixture
       cpSync(wikiDir, tmpWiki, { recursive: true });
@@ -128,9 +128,9 @@ function describeBenchmark(name: string, wikiDir: string, timeout: number) {
       const count = (table: string): number =>
         (bundle.writer.prepare(`SELECT count(*) AS c FROM ${table}`).get() as { c: number }).c;
 
-      const nodeCount = count('kg_nodes');
-      const chunkCount = count('kg_chunks');
-      const vecCount = count('kg_chunks_vec');
+      const nodeCount = count('pinakes_nodes');
+      const chunkCount = count('pinakes_chunks');
+      const vecCount = count('pinakes_chunks_vec');
       const dbSizeBytes = statSync(dbPath).size;
 
       // Build tool handlers
@@ -138,8 +138,8 @@ function describeBenchmark(name: string, wikiDir: string, timeout: number) {
       const executor = new QuickJSExecutor();
       await executor.warmup();
 
-      const searchHandler = makeKgSearchHandler({ repository, embedder, bundle });
-      const executeHandler = makeKgExecuteHandler({
+      const searchHandler = makeSearchHandler({ repository, embedder, bundle });
+      const executeHandler = makeExecuteHandler({
         repository, executor, bundle, embedder, wikiRoot: tmpWiki,
       });
 
@@ -243,9 +243,9 @@ function describeBenchmark(name: string, wikiDir: string, timeout: number) {
       );
     });
 
-    // ── kg_search handler benchmarks ─────────────────────────────────
+    // ── search handler benchmarks ─────────────────────────────────
 
-    it('kg_search handler latency', async () => {
+    it('search handler latency', async () => {
       const times: number[] = [];
       for (const q of QUERIES) {
         const t0 = performance.now();
@@ -254,43 +254,43 @@ function describeBenchmark(name: string, wikiDir: string, timeout: number) {
       }
       const s = stats(times);
       console.error(
-        `[${name}] kg_search p50=${s.p50.toFixed(1)}ms p95=${s.p95.toFixed(1)}ms ` +
+        `[${name}] search p50=${s.p50.toFixed(1)}ms p95=${s.p95.toFixed(1)}ms ` +
         `mean=${s.mean}ms min=${s.min.toFixed(1)}ms max=${s.max.toFixed(1)}ms`
       );
     });
 
-    // ── kg_execute handler benchmarks ─��──────────────────────────────
+    // ── execute handler benchmarks ─��──────────────────────────────
 
-    it('kg_execute FTS handler latency', async () => {
+    it('execute FTS handler latency', async () => {
       const times: number[] = [];
       for (const q of QUERIES) {
         const t0 = performance.now();
         await ctx.executeHandler({
-          code: `return kg.project.fts(${JSON.stringify(q)})`,
+          code: `return pinakes.project.fts(${JSON.stringify(q)})`,
           scope: 'project',
         });
         times.push(performance.now() - t0);
       }
       const s = stats(times);
       console.error(
-        `[${name}] kg_execute(fts) p50=${s.p50.toFixed(1)}ms p95=${s.p95.toFixed(1)}ms ` +
+        `[${name}] execute(fts) p50=${s.p50.toFixed(1)}ms p95=${s.p95.toFixed(1)}ms ` +
         `mean=${s.mean}ms min=${s.min.toFixed(1)}ms max=${s.max.toFixed(1)}ms`
       );
     });
 
-    it('kg_execute hybrid handler latency', async () => {
+    it('execute hybrid handler latency', async () => {
       const times: number[] = [];
       for (const q of QUERIES) {
         const t0 = performance.now();
         await ctx.executeHandler({
-          code: `return kg.project.hybrid(${JSON.stringify(q)})`,
+          code: `return pinakes.project.hybrid(${JSON.stringify(q)})`,
           scope: 'project',
         });
         times.push(performance.now() - t0);
       }
       const s = stats(times);
       console.error(
-        `[${name}] kg_execute(hybrid) p50=${s.p50.toFixed(1)}ms p95=${s.p95.toFixed(1)}ms ` +
+        `[${name}] execute(hybrid) p50=${s.p50.toFixed(1)}ms p95=${s.p95.toFixed(1)}ms ` +
         `mean=${s.mean}ms min=${s.min.toFixed(1)}ms max=${s.max.toFixed(1)}ms`
       );
     });

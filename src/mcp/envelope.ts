@@ -28,7 +28,7 @@ export interface EnvelopeMeta {
 }
 
 /**
- * The canonical response wrapper for both `kg_search` and `kg_execute`.
+ * The canonical response wrapper for both `search` and `execute`.
  *
  * `result` is the tool-specific payload. `meta` is always present and
  * always has every field populated. `logs` is optional — present when the

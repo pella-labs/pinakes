@@ -9,8 +9,8 @@ import { openDb, closeDb, type DbBundle } from '../../db/client.js';
 import { Repository } from '../../db/repository.js';
 import { IngesterService } from '../../ingest/ingester.js';
 import { listMarkdownFiles } from '../../ingest/manifest.js';
-import { makeKgSearchHandler } from '../../mcp/tools/search.js';
-import { makeKgExecuteHandler } from '../../mcp/tools/execute.js';
+import { makeSearchHandler } from '../../mcp/tools/search.js';
+import { makeExecuteHandler } from '../../mcp/tools/execute.js';
 import { CountingEmbedder, getDefaultEmbedder } from '../../retrieval/embedder.js';
 import { QuickJSExecutor } from '../../sandbox/executor.js';
 import { __resetSingleFlightForTests } from '../../ingest/ingester.js';
@@ -61,9 +61,9 @@ describe('fresh-install e2e (Phase 7)', () => {
 
   beforeEach(async () => {
     __resetSingleFlightForTests();
-    tmp = mkdtempSync(join(tmpdir(), 'kg-e2e-'));
+    tmp = mkdtempSync(join(tmpdir(), 'pinakes-e2e-'));
     wikiDir = join(tmp, 'wiki');
-    dbPath = join(tmp, 'kg.db');
+    dbPath = join(tmp, 'pinakes.db');
     mkdirSync(wikiDir, { recursive: true });
 
     // Copy fixtures
@@ -86,8 +86,8 @@ describe('fresh-install e2e (Phase 7)', () => {
     executor = new QuickJSExecutor();
     await executor.warmup();
 
-    searchHandler = makeKgSearchHandler({ repository, embedder, bundle });
-    executeHandler = makeKgExecuteHandler({
+    searchHandler = makeSearchHandler({ repository, embedder, bundle });
+    executeHandler = makeExecuteHandler({
       repository, executor, bundle, embedder, wikiRoot: wikiDir,
     });
   }, 60_000);
@@ -111,7 +111,7 @@ describe('fresh-install e2e (Phase 7)', () => {
   }
 
   // Query 1: basic FTS search
-  it('query 1: kg_search for "authentication"', async () => {
+  it('query 1: search for "authentication"', async () => {
     const res = await searchHandler({ query: 'authentication', scope: 'project' });
     const env = parseEnvelope(res);
     expect(Array.isArray(env.result)).toBe(true);
@@ -120,7 +120,7 @@ describe('fresh-install e2e (Phase 7)', () => {
   });
 
   // Query 2: search with budget constraint
-  it('query 2: kg_search with max_tokens=1000', async () => {
+  it('query 2: search with max_tokens=1000', async () => {
     const res = await searchHandler({ query: 'database', max_tokens: 1000 });
     const env = parseEnvelope(res);
     expect(Array.isArray(env.result)).toBe(true);
@@ -128,10 +128,10 @@ describe('fresh-install e2e (Phase 7)', () => {
     expect(env.meta.tokens_budgeted).toBeLessThanOrEqual(1000);
   });
 
-  // Query 3: kg_execute FTS binding
-  it('query 3: kg_execute with fts()', async () => {
+  // Query 3: execute FTS binding
+  it('query 3: execute with fts()', async () => {
     const res = await executeHandler({
-      code: 'return kg.project.fts("bcrypt")',
+      code: 'return pinakes.project.fts("bcrypt")',
       scope: 'project',
     });
     const env = parseEnvelope(res);
@@ -139,22 +139,22 @@ describe('fresh-install e2e (Phase 7)', () => {
     expect((env.result as unknown[]).length).toBeGreaterThan(0);
   });
 
-  // Query 4: kg_execute node lookup
-  it('query 4: kg_execute hybrid search', async () => {
+  // Query 4: execute node lookup
+  it('query 4: execute hybrid search', async () => {
     const res = await executeHandler({
-      code: 'return kg.project.hybrid("password hashing")',
+      code: 'return pinakes.project.hybrid("password hashing")',
       scope: 'project',
     });
     const env = parseEnvelope(res);
     expect(Array.isArray(env.result)).toBe(true);
   });
 
-  // Query 5: kg_execute with write + read round-trip
-  it('query 5: kg_execute write and read back', async () => {
+  // Query 5: execute with write + read round-trip
+  it('query 5: execute write and read back', async () => {
     const res = await executeHandler({
       code: `
-        kg.project.write("e2e-test.md", "# E2E Test\\nThis was written by the e2e test.");
-        return kg.project.fts("E2E Test");
+        pinakes.project.write("e2e-test.md", "# E2E Test\\nThis was written by the e2e test.");
+        return pinakes.project.fts("E2E Test");
       `,
       scope: 'project',
     });
@@ -169,8 +169,8 @@ describe('fresh-install e2e (Phase 7)', () => {
     expect(statuses.length).toBe(2); // project + personal
     const project = statuses.find((s) => s.scope === 'project')!;
     expect(project.exists).toBe(true);
-    expect(project.rowCounts['kg_nodes']).toBeGreaterThan(0);
-    expect(project.rowCounts['kg_chunks']).toBeGreaterThan(0);
+    expect(project.rowCounts['pinakes_nodes']).toBeGreaterThan(0);
+    expect(project.rowCounts['pinakes_chunks']).toBeGreaterThan(0);
   });
 
   it('export → import round-trip preserves data', () => {
@@ -184,7 +184,7 @@ describe('fresh-install e2e (Phase 7)', () => {
     exportCommand({ scope: 'project', dbPath, out: exportPath });
 
     // Create a fresh DB and import
-    const freshDbPath = join(tmp, 'fresh-kg.db');
+    const freshDbPath = join(tmp, 'fresh-pinakes.db');
     const result = importCommand({
       scope: 'project',
       inFile: exportPath,

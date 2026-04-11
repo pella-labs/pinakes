@@ -1,5 +1,5 @@
 /**
- * `IngestSource` interface for KG-MCP Phase 2.
+ * `IngestSource` interface for Pinakes Phase 2.
  *
  * The data-plane seam between the file-system watcher (chokidar today,
  * orchestrator message queue tomorrow) and the `IngesterService`.
@@ -25,7 +25,7 @@ export interface IngestEvent {
   kind: IngestEventKind;
   /** Absolute path to the markdown file */
   path: string;
-  /** Which KG this event belongs to */
+  /** Which knowledge graph this event belongs to */
   scope: Scope;
 }
 

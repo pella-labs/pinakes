@@ -1,7 +1,7 @@
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 
 /**
- * Graph algorithms over the `kg_edges` table (D40).
+ * Graph algorithms over the `pinakes_edges` table (D40).
  *
  * - **PageRank**: iterative power method (d=0.85, 20 iterations).
  * - **Connected components**: BFS on undirected edge interpretation.
@@ -50,7 +50,7 @@ export function pagerank(
   // Load all nodes
   const nodes = reader
     .prepare<[string], { id: string; source_uri: string; title: string | null }>(
-      `SELECT id, source_uri, title FROM kg_nodes WHERE scope = ?`
+      `SELECT id, source_uri, title FROM pinakes_nodes WHERE scope = ?`
     )
     .all(scope);
 
@@ -62,9 +62,9 @@ export function pagerank(
   // Load edges (only between nodes in this scope)
   const edges = reader
     .prepare<[string, string], { src_id: string; dst_id: string }>(
-      `SELECT e.src_id, e.dst_id FROM kg_edges e
-       JOIN kg_nodes ns ON e.src_id = ns.id
-       JOIN kg_nodes nd ON e.dst_id = nd.id
+      `SELECT e.src_id, e.dst_id FROM pinakes_edges e
+       JOIN pinakes_nodes ns ON e.src_id = ns.id
+       JOIN pinakes_nodes nd ON e.dst_id = nd.id
        WHERE ns.scope = ? AND nd.scope = ?`
     )
     .all(scope, scope);
@@ -155,7 +155,7 @@ export function connectedComponents(
   // Load all nodes
   const nodes = reader
     .prepare<[string], { id: string; source_uri: string; title: string | null }>(
-      `SELECT id, source_uri, title FROM kg_nodes WHERE scope = ?`
+      `SELECT id, source_uri, title FROM pinakes_nodes WHERE scope = ?`
     )
     .all(scope);
 
@@ -164,9 +164,9 @@ export function connectedComponents(
   // Load edges (undirected: add both directions)
   const edges = reader
     .prepare<[string, string], { src_id: string; dst_id: string }>(
-      `SELECT e.src_id, e.dst_id FROM kg_edges e
-       JOIN kg_nodes ns ON e.src_id = ns.id
-       JOIN kg_nodes nd ON e.dst_id = nd.id
+      `SELECT e.src_id, e.dst_id FROM pinakes_edges e
+       JOIN pinakes_nodes ns ON e.src_id = ns.id
+       JOIN pinakes_nodes nd ON e.dst_id = nd.id
        WHERE ns.scope = ? AND nd.scope = ?`
     )
     .all(scope, scope);

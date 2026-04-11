@@ -6,13 +6,13 @@ coverage/
 *.log
 .DS_Store
 
-# SQLite — index is rebuildable from markdown, never commit it
+# SQLite — safety net in case legacy .pinakes/ still exists locally
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
-.pharos/pharos.db*
-.pharos/kg-audit.jsonl
+.pinakes/
+.pharos/
 
 # Editor
 .vscode/

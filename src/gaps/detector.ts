@@ -3,19 +3,19 @@ import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { logger } from '../observability/logger.js';
 
 /**
- * Gap detector for KG-MCP Phase 6.
+ * Gap detector for Pinakes Phase 6.
  *
  * After an ingest transaction commits, scans the new node's content for
  * concept mentions. A "concept" is a term referenced via bold (`**term**`),
  * wikilinks (`[[term]]`), or backtick-quoted identifiers that appears ≥3
- * times across the entire KG but has no dedicated `kg_nodes` row (i.e., no
+ * times across the entire KG but has no dedicated `pinakes_nodes` row (i.e., no
  * node whose title matches the concept).
  *
- * Upserts into `kg_gaps` with `topic`, `first_seen_at`, `mentions_count`.
+ * Upserts into `pinakes_gaps` with `topic`, `first_seen_at`, `mentions_count`.
  * When a node is later created with a matching title, `resolved_at` is set.
  *
  * This is a read-only detection surface — the LLM fills gaps by calling
- * `kg.project.write()` to create wiki pages, and re-indexing resolves
+ * `pinakes.project.write()` to create wiki pages, and re-indexing resolves
  * the gap automatically.
  */
 
@@ -74,7 +74,7 @@ export function extractConcepts(content: string): Set<string> {
  * For each concept extracted from the ingested content:
  * 1. Count how many chunks across the KG contain the concept (case-insensitive)
  * 2. Check if a node with a matching title already exists
- * 3. If ≥3 mentions and no dedicated node → upsert into `kg_gaps`
+ * 3. If ≥3 mentions and no dedicated node → upsert into `pinakes_gaps`
  *
  * Also resolves any existing gaps that now have a dedicated node.
  *
@@ -103,28 +103,28 @@ export function detectGaps(
   }
 
   const countChunkMentions = writer.prepare<[string, string], { c: number }>(
-    `SELECT count(*) AS c FROM kg_chunks ch
-       JOIN kg_nodes n ON ch.node_id = n.id
+    `SELECT count(*) AS c FROM pinakes_chunks ch
+       JOIN pinakes_nodes n ON ch.node_id = n.id
       WHERE n.scope = ? AND ch.text LIKE '%' || ? || '%' COLLATE NOCASE`
   );
 
   const findDedicatedNode = writer.prepare<[string, string], { id: string }>(
-    `SELECT id FROM kg_nodes WHERE scope = ? AND LOWER(title) = ? LIMIT 1`
+    `SELECT id FROM pinakes_nodes WHERE scope = ? AND LOWER(title) = ? LIMIT 1`
   );
 
-  // kg_gaps doesn't have a unique constraint on (scope, topic).
+  // pinakes_gaps doesn't have a unique constraint on (scope, topic).
   // Check if the gap already exists and update or insert accordingly.
   const findGap = writer.prepare<[string, string], { id: number; resolved_at: number | null }>(
-    `SELECT id, resolved_at FROM kg_gaps WHERE scope = ? AND topic = ? LIMIT 1`
+    `SELECT id, resolved_at FROM pinakes_gaps WHERE scope = ? AND topic = ? LIMIT 1`
   );
 
   const insertGap = writer.prepare(
-    `INSERT INTO kg_gaps (scope, topic, first_seen_at, mentions_count)
+    `INSERT INTO pinakes_gaps (scope, topic, first_seen_at, mentions_count)
      VALUES (?, ?, ?, ?)`
   );
 
   const updateGapCount = writer.prepare(
-    `UPDATE kg_gaps SET mentions_count = ?, resolved_at = NULL WHERE id = ?`
+    `UPDATE pinakes_gaps SET mentions_count = ?, resolved_at = NULL WHERE id = ?`
   );
 
   const now = Date.now();
@@ -175,7 +175,7 @@ export function resolveGaps(
   let resolved = 0;
 
   const resolveStmt = writer.prepare(
-    `UPDATE kg_gaps SET resolved_at = ?
+    `UPDATE pinakes_gaps SET resolved_at = ?
       WHERE scope = ? AND LOWER(topic) = ? AND resolved_at IS NULL`
   );
 
@@ -213,7 +213,7 @@ export function queryGaps(
     return reader
       .prepare<[string], GapRow>(
         `SELECT id, topic, first_seen_at, mentions_count, resolved_at
-           FROM kg_gaps WHERE scope = ? ORDER BY mentions_count DESC`
+           FROM pinakes_gaps WHERE scope = ? ORDER BY mentions_count DESC`
       )
       .all(scope);
   }
@@ -221,7 +221,7 @@ export function queryGaps(
   return reader
     .prepare<[string], GapRow>(
       `SELECT id, topic, first_seen_at, mentions_count, resolved_at
-         FROM kg_gaps WHERE scope = ? AND resolved_at IS NULL
+         FROM pinakes_gaps WHERE scope = ? AND resolved_at IS NULL
          ORDER BY mentions_count DESC`
     )
     .all(scope);

@@ -30,7 +30,7 @@ import { installBindings, type BindingDeps } from './bindings/install.js';
  * QuickJS-backed Executor.
  *
  * Phase 3 upgrade: warm pool N=2 + `executeWithBindings()` for the full
- * `kg.project.*` binding surface. The legacy `execute()` path (flat
+ * `pinakes.project.*` binding surface. The legacy `execute()` path (flat
  * providers) remains for backward compatibility with Phase 1/2 tests.
  *
  * **Pool path** (`executeWithBindings`):
@@ -42,7 +42,7 @@ import { installBindings, type BindingDeps } from './bindings/install.js';
  *
  * **Legacy path** (`execute`):
  *   Fresh runtime + context per call, flat provider injection.
- *   Kept for Phase 1/2 spike tests that use `kg.search`/`kg.get` directly.
+ *   Kept for Phase 1/2 spike tests that use `pinakes.search`/`pinakes.get` directly.
  *
  * Error handling is always in-payload (CLAUDE.md §API Rules #8).
  */
@@ -103,7 +103,7 @@ export class QuickJSExecutor implements Executor {
   }
 
   /**
-   * Phase 3 primary path: execute code with the full `kg.project.*`
+   * Phase 3 primary path: execute code with the full `pinakes.project.*`
    * bindings, `budget.fit()`, and `logger.log()` installed via the pool.
    */
   async executeWithBindings(
@@ -145,12 +145,12 @@ export class QuickJSExecutor implements Executor {
       }
       disableResult.value.dispose();
 
-      // Install all bindings (logger, kg.project.*, budget.fit)
+      // Install all bindings (logger, pinakes.project.*, budget.fit)
       installBindings(context, deps);
 
       // Evaluate the wrapped code
       const callSource = `(${wrapped})()`;
-      const evalResult = context.evalCode(callSource, 'kg_execute.js');
+      const evalResult = context.evalCode(callSource, 'pinakes_execute.js');
       if (evalResult.error) {
         const err = context.dump(evalResult.error);
         evalResult.error.dispose();
@@ -164,7 +164,7 @@ export class QuickJSExecutor implements Executor {
         if (state.type === 'pending') {
           return {
             result: null,
-            error: 'kg_execute Promise never settled — all host bindings are synchronous',
+            error: 'pinakes_execute Promise never settled — all host bindings are synchronous',
             logs: deps.logs,
           };
         }
@@ -256,7 +256,7 @@ export class QuickJSExecutor implements Executor {
       installProviders(context, providersOrFns);
 
       const callSource = `(${wrapped})()`;
-      const evalResult = context.evalCode(callSource, 'kg_execute.js');
+      const evalResult = context.evalCode(callSource, 'pinakes_execute.js');
       if (evalResult.error) {
         const err = context.dump(evalResult.error);
         evalResult.error.dispose();
@@ -270,7 +270,7 @@ export class QuickJSExecutor implements Executor {
         if (state.type === 'pending') {
           return {
             result: null,
-            error: 'kg_execute Promise never settled — async host bindings are not supported',
+            error: 'pinakes_execute Promise never settled — async host bindings are not supported',
             logs,
           };
         }

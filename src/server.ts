@@ -3,34 +3,45 @@ import { serveCommand } from './cli/serve.js';
 import { logger } from './observability/logger.js';
 
 /**
- * KG-MCP stdio server entry point.
+ * Pinakes stdio server entry point.
  *
  * Phase 2 entry — replaces the Phase 1 `src/spike.ts`. The actual wiring lives
  * in `src/cli/serve.ts` so the CLI router and the production stdio entry
  * share one implementation. This file exists so that `pnpm run dev`
- * (`tsx watch src/server.ts`) and the published binary script (`bin/kg-mcp`)
- * have a stable, single-purpose entry without `kg serve` argv prefix gymnastics.
+ * (`tsx watch src/server.ts`) and the published binary script (`bin/pinakes`)
+ * have a stable, single-purpose entry without `pinakes serve` argv prefix gymnastics.
  *
  * Behavior:
- *   - Reads `--wiki-path`, `--db-path`, `--profile-path`, `--profile-db-path`
- *     from argv (none required if KG_WIKI_PATH is set)
+ *   - Reads `--project-root`, `--wiki-path`, `--db-path`, `--profile-path`,
+ *     `--profile-db-path` from argv
+ *   - All data stored under `~/.pinakes/` (override with `PINAKES_ROOT`)
  *   - Boots the full Phase 2 stack (DB, embedder, chokidar watchers, MCP server)
  *   - Listens on stdio and runs forever until SIGTERM/SIGINT
  */
 
 interface ParsedArgs {
-  wikiPath: string | undefined;
+  projectRoot?: string;
+  wikiPath?: string;
   dbPath?: string;
   profilePath?: string;
   profileDbPath?: string;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const out: ParsedArgs = { wikiPath: process.env.KG_WIKI_PATH };
+  const out: ParsedArgs = {};
+  // Legacy env support — PINAKES_WIKI_PATH still works as wiki path override
+  if (process.env.PINAKES_WIKI_PATH) {
+    out.wikiPath = process.env.PINAKES_WIKI_PATH;
+  }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (!arg) continue;
-    if (arg === '--wiki-path' && argv[i + 1]) {
+    if (arg === '--project-root' && argv[i + 1]) {
+      out.projectRoot = argv[i + 1];
+      i++;
+    } else if (arg.startsWith('--project-root=')) {
+      out.projectRoot = arg.slice('--project-root='.length);
+    } else if (arg === '--wiki-path' && argv[i + 1]) {
       out.wikiPath = argv[i + 1];
       i++;
     } else if (arg.startsWith('--wiki-path=')) {
@@ -57,12 +68,8 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.wikiPath) {
-    throw new Error(
-      'missing required: pass --wiki-path <dir> or set KG_WIKI_PATH env var'
-    );
-  }
   await serveCommand({
+    projectRoot: args.projectRoot,
     wikiPath: args.wikiPath,
     dbPath: args.dbPath,
     profilePath: args.profilePath,
@@ -86,7 +93,7 @@ const isMainModule = (() => {
 
 if (isMainModule) {
   main().catch((err) => {
-    logger.error({ err }, 'kg-mcp fatal');
+    logger.error({ err }, 'pinakes fatal');
     process.exit(1);
   });
 }

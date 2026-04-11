@@ -1,6 +1,12 @@
-import { resolve } from 'node:path';
 import { closeDb, openDb } from '../db/client.js';
 import { createLlmProvider } from '../llm/provider.js';
+import {
+  resolveAbs,
+  projectWikiPath as defaultProjectWikiPath,
+  projectDbPath as defaultProjectDbPath,
+  personalWikiPath as defaultPersonalWikiPath,
+  personalDbPath as defaultPersonalDbPath,
+} from '../paths.js';
 import { contradictionScan, type ContradictionResult } from './contradiction.js';
 
 /**
@@ -9,11 +15,21 @@ import { contradictionScan, type ContradictionResult } from './contradiction.js'
  */
 export async function contradictionScanCommand(opts: {
   scope: 'project' | 'personal';
+  projectRoot?: string;
   wikiPath?: string;
   dbPath?: string;
 }): Promise<ContradictionResult> {
-  const wikiPath = resolve(opts.wikiPath ?? '.kg/wiki');
-  const dbPath = opts.dbPath ?? resolve(wikiPath, '..', 'kg.db');
+  const projectRoot = resolveAbs(opts.projectRoot ?? process.cwd());
+  const wikiPath = opts.wikiPath
+    ? resolveAbs(opts.wikiPath)
+    : opts.scope === 'personal'
+      ? defaultPersonalWikiPath()
+      : defaultProjectWikiPath(projectRoot);
+  const dbPath = opts.dbPath
+    ? resolveAbs(opts.dbPath)
+    : opts.scope === 'personal'
+      ? defaultPersonalDbPath()
+      : defaultProjectDbPath(projectRoot);
 
   const bundle = openDb(dbPath);
   try {

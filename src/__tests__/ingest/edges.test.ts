@@ -16,7 +16,7 @@ import {
  * Wikilink edge extraction tests (D39).
  *
  * Verifies that [[wikilinks]] in markdown content are resolved to
- * kg_edges rows during ingest, making the neighbors() binding useful.
+ * pinakes_edges rows during ingest, making the neighbors() binding useful.
  */
 
 interface TestContext {
@@ -31,10 +31,10 @@ describe('ingest/edges (D39)', () => {
 
   beforeEach(() => {
     __resetSingleFlightForTests();
-    const tmp = mkdtempSync(join(tmpdir(), 'kg-edges-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'pinakes-edges-'));
     const wikiDir = join(tmp, 'wiki');
     mkdirSync(wikiDir, { recursive: true });
-    const bundle = openDb(join(tmp, 'kg.db'));
+    const bundle = openDb(join(tmp, 'pinakes.db'));
     const embedder = new CountingEmbedder(getDefaultEmbedder());
     const ingester = new IngesterService(bundle, embedder, 'project', wikiDir);
     ctx = { tmp, wikiDir, bundle, ingester };
@@ -81,8 +81,8 @@ describe('ingest/edges (D39)', () => {
     const edges = c.bundle.writer
       .prepare<[], { src_id: string; dst_id: string; edge_kind: string }>(
         `SELECT e.src_id, e.dst_id, e.edge_kind
-         FROM kg_edges e
-         JOIN kg_nodes n ON e.src_id = n.id
+         FROM pinakes_edges e
+         JOIN pinakes_nodes n ON e.src_id = n.id
          WHERE n.scope = 'project'`
       )
       .all();
@@ -108,7 +108,7 @@ describe('ingest/edges (D39)', () => {
     await c.ingester.ingestFile(join(c.wikiDir, 'auth.md'));
 
     const edges = c.bundle.writer
-      .prepare(`SELECT count(*) AS c FROM kg_edges`)
+      .prepare(`SELECT count(*) AS c FROM pinakes_edges`)
       .get() as { c: number };
 
     expect(edges.c).toBe(0);
@@ -131,7 +131,7 @@ describe('ingest/edges (D39)', () => {
     await c.ingester.ingestFile(join(c.wikiDir, 'auth.md'));
 
     const countBefore = (
-      c.bundle.writer.prepare(`SELECT count(*) AS c FROM kg_edges`).get() as { c: number }
+      c.bundle.writer.prepare(`SELECT count(*) AS c FROM pinakes_edges`).get() as { c: number }
     ).c;
 
     // Modify auth.md slightly and re-ingest (will bypass manifest fast path)
@@ -142,7 +142,7 @@ describe('ingest/edges (D39)', () => {
     await c.ingester.ingestFile(join(c.wikiDir, 'auth.md'));
 
     const countAfter = (
-      c.bundle.writer.prepare(`SELECT count(*) AS c FROM kg_edges`).get() as { c: number }
+      c.bundle.writer.prepare(`SELECT count(*) AS c FROM pinakes_edges`).get() as { c: number }
     ).c;
 
     // Same number of edges — old edges deleted, same edges re-inserted
@@ -166,7 +166,7 @@ describe('ingest/edges (D39)', () => {
 
     const edges = c.bundle.writer
       .prepare<[], { src_id: string; dst_id: string }>(
-        `SELECT src_id, dst_id FROM kg_edges WHERE edge_kind = 'wikilink'`
+        `SELECT src_id, dst_id FROM pinakes_edges WHERE edge_kind = 'wikilink'`
       )
       .all();
 

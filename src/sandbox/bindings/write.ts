@@ -7,24 +7,24 @@ import { toStoredUri } from '../../ingest/manifest.js';
 import { logger } from '../../observability/logger.js';
 
 /**
- * Write-path bindings for `kg.project.write()`, `kg.project.append()`,
- * and `kg.project.remove()` (CLAUDE.md §Architecture #6, presearch D35).
+ * Write-path bindings for `pinakes.project.write()`, `pinakes.project.append()`,
+ * and `pinakes.project.remove()` (CLAUDE.md §Architecture #6, presearch D35).
  *
  * **Write contract**:
  *   1. Path containment: resolved path must start with `wikiRoot`
  *   2. Extension: only `.md` files
- *   3. Size: max `KG_MAX_WRITE_SIZE` bytes (default 100KB)
- *   4. Rate: max 20 writes per `kg_execute` call
+ *   3. Size: max `PINAKES_MAX_WRITE_SIZE` bytes (default 100KB)
+ *   4. Rate: max 20 writes per `execute` call
  *   5. Atomic: tmp file + rename (never half-written files)
- *   6. Audit: every write appends to `kg_log`
+ *   6. Audit: every write appends to `pinakes_log`
  *
  * Chokidar picks up the written file and triggers re-indexing automatically.
  */
 
-const MAX_WRITE_SIZE = parseInt(process.env['KG_MAX_WRITE_SIZE'] ?? '102400', 10);
+const MAX_WRITE_SIZE = parseInt(process.env['PINAKES_MAX_WRITE_SIZE'] ?? '102400', 10);
 const MAX_WRITES_PER_CALL = 20;
 
-/** Mutable counter shared across all write operations in a single kg_execute call. */
+/** Mutable counter shared across all write operations in a single pinakes_execute call. */
 export interface WriteCounter {
   value: number;
 }
@@ -94,7 +94,7 @@ function checkRateLimit(counter: WriteCounter): void {
   counter.value++;
   if (counter.value > MAX_WRITES_PER_CALL) {
     throw new Error(
-      `write rate limit exceeded: max ${MAX_WRITES_PER_CALL} writes per kg_execute call (attempted #${counter.value})`
+      `write rate limit exceeded: max ${MAX_WRITES_PER_CALL} writes per pinakes_execute call (attempted #${counter.value})`
     );
   }
 }
@@ -114,12 +114,12 @@ function auditLog(
   try {
     writer
       .prepare(
-        `INSERT INTO kg_log (ts, scope, kind, source_uri, payload)
+        `INSERT INTO pinakes_log (ts, scope, kind, source_uri, payload)
          VALUES (?, ?, ?, ?, ?)`
       )
       .run(Date.now(), scope, kind, toStoredUri(filePath, wikiRoot, scope as 'project' | 'personal'), JSON.stringify(payload));
   } catch (err) {
-    logger.warn({ err, kind, filePath }, 'failed to append write audit to kg_log');
+    logger.warn({ err, kind, filePath }, 'failed to append write audit to pinakes_log');
   }
 }
 

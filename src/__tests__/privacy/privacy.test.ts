@@ -9,14 +9,14 @@ import { Repository } from '../../db/repository.js';
 import { IngesterService, __resetSingleFlightForTests } from '../../ingest/ingester.js';
 import { CountingEmbedder, getDefaultEmbedder } from '../../retrieval/embedder.js';
 import { QuickJSExecutor } from '../../sandbox/executor.js';
-import { makeKgExecuteHandler } from '../../mcp/tools/execute.js';
+import { makeExecuteHandler } from '../../mcp/tools/execute.js';
 
 /**
  * Phase 5 adversarial privacy suite — 15 tests, MERGE BLOCKER.
  *
  * These tests verify the privacy invariant: when `scope='project'`,
- * `kg.personal` does NOT exist in the sandbox — not undefined, not null,
- * simply absent from the `kg` object. No amount of introspection from
+ * `pinakes.personal` does NOT exist in the sandbox — not undefined, not null,
+ * simply absent from the `pinakes` object. No amount of introspection from
  * guest code can discover or access personal data.
  *
  * All tests use real SQLite + real QuickJS per CLAUDE.md §Testing Rules #5-6.
@@ -37,7 +37,7 @@ let personalWiki: string;
 
 /** Make a handler with both scopes available (used to test gate enforcement). */
 function makeHandler(scope?: 'project' | 'personal' | 'both') {
-  return makeKgExecuteHandler({
+  return makeExecuteHandler({
     repository,
     executor,
     bundle: projectBundle,
@@ -55,7 +55,7 @@ function parseEnvelope(response: { content: [{ type: 'text'; text: string }] }) 
 beforeAll(async () => {
   __resetSingleFlightForTests();
 
-  tmpRoot = mkdtempSync(join(tmpdir(), 'kg-privacy-'));
+  tmpRoot = mkdtempSync(join(tmpdir(), 'pinakes-privacy-'));
 
   // Set up project wiki
   projectWiki = join(tmpRoot, 'project-wiki');
@@ -107,31 +107,31 @@ afterAll(() => {
 // ============================================================================
 
 describe('adversarial privacy suite (merge blocker)', () => {
-  it('1. scope=project → kg.personal.fts("x") throws', async () => {
+  it('1. scope=project → pinakes.personal.fts("x") throws', async () => {
     const handler = makeHandler();
-    const res = await handler({ code: `return kg.personal.fts('x')`, scope: 'project' });
+    const res = await handler({ code: `return pinakes.personal.fts('x')`, scope: 'project' });
     const env = parseEnvelope(res);
     expect(env.result).toHaveProperty('error');
     expect(env.result.error).toMatch(/cannot read|undefined|not.*function/i);
   });
 
-  it('2. scope=project → kg["personal"]?.fts?.("x") returns undefined', async () => {
+  it('2. scope=project → pinakes["personal"]?.fts?.("x") returns undefined', async () => {
     const handler = makeHandler();
-    const res = await handler({ code: `return kg['personal']?.fts?.('x')`, scope: 'project' });
+    const res = await handler({ code: `return pinakes['personal']?.fts?.('x')`, scope: 'project' });
     const env = parseEnvelope(res);
     expect(env.result).toBeUndefined();
   });
 
-  it('3. scope=project → Object.keys(kg) does not include "personal"', async () => {
+  it('3. scope=project → Object.keys(pinakes) does not include "personal"', async () => {
     const handler = makeHandler();
-    const res = await handler({ code: `return Object.keys(kg)`, scope: 'project' });
+    const res = await handler({ code: `return Object.keys(pinakes)`, scope: 'project' });
     const env = parseEnvelope(res);
     expect(env.result).not.toContain('personal');
   });
 
-  it('4. scope=project → JSON.stringify(kg) does not include personal content', async () => {
+  it('4. scope=project → JSON.stringify(pinakes) does not include personal content', async () => {
     const handler = makeHandler();
-    const res = await handler({ code: `return JSON.stringify(kg)`, scope: 'project' });
+    const res = await handler({ code: `return JSON.stringify(pinakes)`, scope: 'project' });
     const env = parseEnvelope(res);
     const str = typeof env.result === 'string' ? env.result : JSON.stringify(env.result);
     expect(str).not.toContain('hunter2');
@@ -141,27 +141,27 @@ describe('adversarial privacy suite (merge blocker)', () => {
   it('5. scope=project → for-in enumeration does not find "personal"', async () => {
     const handler = makeHandler();
     const res = await handler({
-      code: `for (const k in kg) { if (k === 'personal') return 'LEAK'; } return 'SAFE'`,
+      code: `for (const k in pinakes) { if (k === 'personal') return 'LEAK'; } return 'SAFE'`,
       scope: 'project',
     });
     const env = parseEnvelope(res);
     expect(env.result).toBe('SAFE');
   });
 
-  it('6. scope=project → Reflect.ownKeys(kg) does not include "personal"', async () => {
+  it('6. scope=project → Reflect.ownKeys(pinakes) does not include "personal"', async () => {
     const handler = makeHandler();
     // Reflect is disabled but Object.getOwnPropertyNames is equivalent
     const res = await handler({
-      code: `return Object.getOwnPropertyNames(kg)`,
+      code: `return Object.getOwnPropertyNames(pinakes)`,
       scope: 'project',
     });
     const env = parseEnvelope(res);
     expect(env.result).not.toContain('personal');
   });
 
-  it('7. scope=project → kg.describe() does not include personal field', async () => {
+  it('7. scope=project → pinakes.describe() does not include personal field', async () => {
     const handler = makeHandler();
-    const res = await handler({ code: `return kg.describe()`, scope: 'project' });
+    const res = await handler({ code: `return pinakes.describe()`, scope: 'project' });
     const env = parseEnvelope(res);
     expect(env.result).toHaveProperty('project');
     expect(env.result).not.toHaveProperty('personal');
@@ -171,7 +171,7 @@ describe('adversarial privacy suite (merge blocker)', () => {
     const handler = makeHandler();
     // Use a fake id that looks like it could be personal — project DB won't have it
     const res = await handler({
-      code: `return kg.project.neighbors('fake-personal-node-id')`,
+      code: `return pinakes.project.neighbors('fake-personal-node-id')`,
       scope: 'project',
     });
     const env = parseEnvelope(res);
@@ -205,7 +205,7 @@ describe('adversarial privacy suite (merge blocker)', () => {
     const res = await handler({
       code: `
         logger.log('attempting to access personal');
-        const hasPersonal = typeof kg.personal !== 'undefined';
+        const hasPersonal = typeof pinakes.personal !== 'undefined';
         logger.log('hasPersonal: ' + hasPersonal);
         return hasPersonal;
       `,
@@ -219,8 +219,8 @@ describe('adversarial privacy suite (merge blocker)', () => {
     const handler = makeHandler();
     const res = await handler({
       code: `
-        var p = kg.project.fts('auth');
-        var n = kg.personal.fts('secret');
+        var p = pinakes.project.fts('auth');
+        var n = pinakes.personal.fts('secret');
         return { project: p.length, personal: n.length, hasBoth: p.length > 0 && n.length > 0 };
       `,
       scope: 'both',
@@ -231,10 +231,10 @@ describe('adversarial privacy suite (merge blocker)', () => {
     expect(env.result.personal).toBeGreaterThan(0);
   });
 
-  it('12. scope=personal → kg.project is NOT available (only personal is)', async () => {
+  it('12. scope=personal → pinakes.project is NOT available (only personal is)', async () => {
     const handler = makeHandler();
     const res = await handler({
-      code: `return { hasProject: typeof kg.project !== 'undefined', hasPersonal: typeof kg.personal !== 'undefined' }`,
+      code: `return { hasProject: typeof pinakes.project !== 'undefined', hasPersonal: typeof pinakes.personal !== 'undefined' }`,
       scope: 'personal',
     });
     const env = parseEnvelope(res);
@@ -256,21 +256,21 @@ describe('adversarial privacy suite (merge blocker)', () => {
     const handler = makeHandler();
 
     // Call with project scope
-    const r1 = await handler({ code: `return typeof kg.personal`, scope: 'project' });
+    const r1 = await handler({ code: `return typeof pinakes.personal`, scope: 'project' });
     expect(parseEnvelope(r1).result).toBe('undefined');
 
     // Call with personal scope
-    const r2 = await handler({ code: `return typeof kg.personal`, scope: 'personal' });
+    const r2 = await handler({ code: `return typeof pinakes.personal`, scope: 'personal' });
     expect(parseEnvelope(r2).result).toBe('object');
 
     // Call with project scope again — must still be clean
-    const r3 = await handler({ code: `return typeof kg.personal`, scope: 'project' });
+    const r3 = await handler({ code: `return typeof pinakes.personal`, scope: 'project' });
     expect(parseEnvelope(r3).result).toBe('undefined');
   });
 
   it('15. scope=project when personal DB is missing → still works', async () => {
     // Create a handler without personalBundle
-    const noPersonalHandler = makeKgExecuteHandler({
+    const noPersonalHandler = makeExecuteHandler({
       repository: new Repository(projectBundle),
       executor,
       bundle: projectBundle,
@@ -279,7 +279,7 @@ describe('adversarial privacy suite (merge blocker)', () => {
       // personalBundle intentionally omitted
     });
 
-    const res = await noPersonalHandler({ code: `return kg.project.fts('auth').length`, scope: 'project' });
+    const res = await noPersonalHandler({ code: `return pinakes.project.fts('auth').length`, scope: 'project' });
     const env = parseEnvelope(res);
     expect(env.result).toBeGreaterThan(0);
   });

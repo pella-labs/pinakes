@@ -1,4 +1,4 @@
-# KG-MCP — Project Conventions
+# Pinakes — Project Conventions
 
 > **Read this first.** These rules are locked from `dev-docs/presearch.md` and are not open for debate without updating that document. If you need to change something here, update the presearch first and flag the decision explicitly.
 
@@ -53,14 +53,14 @@ pnpm run test:budget                    # budget gate adversarial suite
 pnpm run db:migrate                     # apply drizzle migrations
 pnpm run db:generate                    # generate new migration from schema changes
 
-# CLI
-pnpm run kg -- serve --wiki-path <dir>     # stdio MCP server (default)
-pnpm run kg -- rebuild --wiki-path <dir>   # full rebuild from markdown
-pnpm run kg -- status                      # health + row counts
-pnpm run kg -- audit --tail                # tail kg_audit
-pnpm run kg -- purge --scope <s>           # delete a scope's DB
-pnpm run kg -- export --scope <s>          # dump nodes + edges as JSON
-pnpm run kg -- import --scope <s> --in f   # restore from dump
+# CLI — all data stored under ~/.pinakes/ (set PINAKES_ROOT to override)
+pnpm run pinakes -- serve                       # stdio MCP server (project root = cwd)
+pnpm run pinakes -- rebuild                     # full rebuild from markdown
+pnpm run pinakes -- status                      # health + row counts
+pnpm run pinakes -- audit --tail                # tail pinakes_audit
+pnpm run pinakes -- purge --scope <s>           # delete a scope's DB
+pnpm run pinakes -- export --scope <s>          # dump nodes + edges as JSON
+pnpm run pinakes -- import --scope <s> --in f   # restore from dump
 ```
 
 ## Architecture Rules
@@ -75,7 +75,7 @@ pnpm run kg -- import --scope <s> --in f   # restore from dump
    ```
    src/
      server.ts                 # MCP stdio server entry
-     spike.ts                  # Phase 1 spike entry (remove after Phase 2)
+     paths.ts                  # centralized path resolution (~/.pinakes/ layout)
      cli/                      # CLI subcommands
      mcp/                      # MCP tool definitions + dispatcher
        tools/search.ts
@@ -84,7 +84,7 @@ pnpm run kg -- import --scope <s> --in f   # restore from dump
      sandbox/                  # QuickJS + code-mode executor
        executor.ts             # QuickJSExecutor (Phase 1+) — fresh-context-per-call; warm pool in Phase 3
        vendored-codemode.ts    # vendored normalizeCode + sanitizeToolName + generateTypesFromJsonSchema + Executor interface (MIT, Cloudflare Inc.) — presearch D30
-       bindings/               # kg, budget, logger bindings (Phase 3+)
+       bindings/               # pinakes, budget, logger bindings (Phase 3+)
        pool.ts                 # warm pool N=2 (Phase 3)
      db/
        schema.ts               # drizzle schema (ALL 8 tables)
@@ -110,7 +110,7 @@ pnpm run kg -- import --scope <s> --in f   # restore from dump
      observability/
        logger.ts               # pino config
        metrics.ts              # in-process counters
-       audit.ts                # kg_audit writer + jsonl mirror
+       audit.ts                # pinakes_audit writer + jsonl mirror
      __tests__/
        privacy/                # 15-test adversarial suite
        budget/                 # budget gate adversarial suite
@@ -124,7 +124,7 @@ pnpm run kg -- import --scope <s> --in f   # restore from dump
 
 5. **Module boundaries**: `mcp/` knows about tool schemas. `sandbox/` knows about QuickJS. `db/` knows about SQL. `retrieval/` knows about queries. **No cross-module imports except through explicit interfaces** (e.g. `ingest/` → `db/` is OK via a writer-facing repository interface).
 
-6. **Write path via sandbox bindings.** The LLM writes wiki content via `kg.project.write(path, content)` inside `kg_execute`. Writes go to disk first (atomic rename), then chokidar triggers re-indexing. Markdown remains canonical. Safety constraints: path containment to wiki root, `.md` extension only, 100KB max per write, 20 writes per `kg_execute` call, audit-logged. See presearch.md D35.
+6. **Write path via sandbox bindings.** The LLM writes wiki content via `pinakes.project.write(path, content)` inside `execute`. Writes go to disk first (atomic rename), then chokidar triggers re-indexing. Markdown remains canonical. Safety constraints: path containment to wiki root, `.md` extension only, 100KB max per write, 20 writes per `execute` call, audit-logged. See presearch.md D35.
 
 7. **Client-agnostic MCP surface**: any stdio MCP client can use this server. Do not add client-specific coupling (Electron IPC, Goose-specific channels, etc.). The stdio protocol is the only integration surface.
 
@@ -142,29 +142,29 @@ pnpm run kg -- import --scope <s> --in f   # restore from dump
 
 2. **Deterministic node ids**: `id = sha1(scope + ':' + source_uri + ':' + section_path)`. Re-indexing the same content must produce the same id. This makes ingest idempotent.
 
-3. **Per-chunk content hash + skip-unchanged**: every `kg_chunks` row carries `chunk_sha = sha1(chunk_text)`. On re-ingest of a whole file (callers commonly rewrite full files, not diffs), only re-embed chunks whose `chunk_sha` changed. This avoids the cascading reindex bomb where 6 wiki files rewritten per turn trigger 60 chunks × 50ms embedding = 3s of blocking work that competes with the active coding LLM for Ollama.
+3. **Per-chunk content hash + skip-unchanged**: every `pinakes_chunks` row carries `chunk_sha = sha1(chunk_text)`. On re-ingest of a whole file (callers commonly rewrite full files, not diffs), only re-embed chunks whose `chunk_sha` changed. This avoids the cascading reindex bomb where 6 wiki files rewritten per turn trigger 60 chunks × 50ms embedding = 3s of blocking work that competes with the active coding LLM for Ollama.
 
 4. **Chokidar debounce: 2 seconds**, not default 50ms. Writes use atomic rename which triggers chokidar, but follow-up writes (e.g., log.md append) land microseconds later. A 2s debounce coalesces them into one ingest pass. Use a bounded queue with drop-oldest if multiple ingest events for the same file are queued.
 
-5. **Startup consistency check** via `.kg/kg-manifest.json` (project) and `~/.kg/kg-manifest.json` (personal). The manifest stores `{ file_path: {source_sha, chunk_shas: []} }`. On startup, compare to disk and auto-rebuild divergent files. This handles mid-ingest crash recovery against pre-v1 sqlite-vec's untested crash semantics.
+5. **Startup consistency check** via `~/.pinakes/projects/<mangled>/manifest.json` (project) and `~/.pinakes/manifest.json` (personal). The manifest stores `{ file_path: {source_sha, chunk_shas: []} }`. On startup, compare to disk and auto-rebuild divergent files. This handles mid-ingest crash recovery against pre-v1 sqlite-vec's untested crash semantics.
 
 6. **Staleness check**: on query, compare current disk `source_sha` to DB `source_sha`; emit mismatches in `meta.stale_files[]`.
 
 7. **Transactions per ingest**: wrap each file's ingest in `BEGIN ... COMMIT`. Partial failures rollback cleanly.
 
-8. **Schema versioning**: stamp a `schema_version` row in `kg_meta`. On mismatch at startup, run migrations; if sqlite-vec breaks, drop + rebuild `kg_chunks_vec` and re-embed (fast, ~10s for 5K chunks).
+8. **Schema versioning**: stamp a `schema_version` row in `pinakes_meta`. On mismatch at startup, run migrations; if sqlite-vec breaks, drop + rebuild `pinakes_chunks_vec` and re-embed (fast, ~10s for 5K chunks).
 
 9. **FTS5 tokenizer**: use `unicode61 remove_diacritics 2`. **NOT trigram** — it triples the DB size (see presearch.md §Loop 0 gotcha).
 
-10. **Vector dims**: currently 384 (MiniLM default). If user swaps embedder, `kg_chunks_vec` must be dropped and recreated with new dims, then all chunks re-embedded. Do this as a distinct migration path.
+10. **Vector dims**: currently 384 (MiniLM default). If user swaps embedder, `pinakes_chunks_vec` must be dropped and recreated with new dims, then all chunks re-embedded. Do this as a distinct migration path.
 
-11. **Standalone DB files**: `<projectDir>/.kg/kg.db` for project KG, `~/.kg/kg.db` for personal KG. No shared schema with any external app. The `--db-path` flag overrides the default for backward compatibility with existing deployments.
+11. **Standalone DB files**: `~/.pinakes/projects/<mangled>/pinakes.db` for project KG, `~/.pinakes/pinakes.db` for personal KG. No shared schema with any external app. The `--db-path` flag overrides the default for backward compatibility with existing deployments. Project paths are mangled using the Claude Code convention (`/` → `-`), e.g. `/Users/me/dev/proj` → `~/.pinakes/projects/-Users-me-dev-proj/`.
 
-12. **Personal KG hard cap: 5,000 chunks with LRU eviction** on `last_accessed_at`. Personal KG accumulates across every repo the developer touches; without a cap it grows unbounded and bloats vector search latency (200ms+ per query at 50K chunks). Every row in `kg_nodes` and `kg_chunks` for `scope='personal'` has a `last_accessed_at` timestamp bumped on every read. On ingest, if the personal KG exceeds 5000 chunks, evict the oldest-accessed nodes (cascades to chunks/edges) until under the cap. The project KG has no cap (scoped to the repo, dies with the repo).
+12. **Personal KG hard cap: 5,000 chunks with LRU eviction** on `last_accessed_at`. Personal KG accumulates across every repo the developer touches; without a cap it grows unbounded and bloats vector search latency (200ms+ per query at 50K chunks). Every row in `pinakes_nodes` and `pinakes_chunks` for `scope='personal'` has a `last_accessed_at` timestamp bumped on every read. On ingest, if the personal KG exceeds 5000 chunks, evict the oldest-accessed nodes (cascades to chunks/edges) until under the cap. The project KG has no cap (scoped to the repo, dies with the repo).
 
 ## API Rules (MCP tool surface)
 
-1. **Exactly 2 tools. No exceptions in MVP.** `kg_search` and `kg_execute`. Adding a third breaks the code-mode thesis (minimize tool schema tokens).
+1. **Exactly 2 tools. No exceptions in MVP.** `knowledge_search` and `knowledge_query` (registered under MCP server name `project-docs`). Adding a third breaks the code-mode thesis (minimize tool schema tokens). Names are configurable via `PINAKES_TOOL_SEARCH_NAME`, `PINAKES_TOOL_EXECUTE_NAME`, and `PINAKES_SERVER_NAME` env vars.
 
 2. **Total tool schema footprint target <1500 tokens.** Measure via js-tiktoken in CI. Fail the build if the concatenated tool descriptions exceed 1500 tokens.
 
@@ -183,17 +183,17 @@ pnpm run kg -- import --scope <s> --in f   # restore from dump
    - `safety_margin = 0.9` (js-tiktoken estimation error headroom)
    - `available_for_results = floor((max_tokens - envelope_reserve) * safety_margin)`
    - At user `max_tokens=5000`: `available = floor(4500 * 0.9) = 4050` tokens for actual result bodies
-   - Truncation is **greedy by RRF rank**: keep the highest-ranked result whole if it fits; otherwise emit a **`too_large` sentinel** with an id + URI so the LLM can decide to re-query with higher `max_tokens` or `kg.project.get(id)` for the specific node
+   - Truncation is **greedy by RRF rank**: keep the highest-ranked result whole if it fits; otherwise emit a **`too_large` sentinel** with an id + URI so the LLM can decide to re-query with higher `max_tokens` or `pinakes.project.get(id)` for the specific node
    - **Long-string fast path**: `countTokens(text)` in `src/gate/budget.ts` switches to a conservative character-based estimate (`ceil(length / 3.0)`) when `text.length > EXACT_TOKENIZE_MAX_CHARS` (currently 8000). This mitigates a js-tiktoken O(n²) DoS vector found in Phase 1 — a 60K-char string takes ~200s to tokenize otherwise. Any replacement tokenizer must either be O(n) or preserve this threshold. See presearch.md D32.
    - Test adversarially: single 10K-token node, 100 small nodes, 1 huge + 99 small, all must comply
 
-7. **Tool descriptions are the prompt.** Keep them clear and terse. Describe when to use `kg_search` vs `kg_execute`. Describe scope semantics. Describe that `eval`/`Function`/`fetch` are unavailable in the sandbox.
+7. **Tool descriptions + server instructions are the prompt.** The MCP server `instructions` field is the primary lever for tool selection (eval-validated: 0% → 80%). Tool descriptions should lead with value ("START HERE"), not disclaim ("not source code"). Never use the word "wiki" in tool-facing text — use "knowledge base" or "project knowledge". Describe when to use `knowledge_search` vs `knowledge_query`. Describe scope semantics. Describe that `eval`/`Function`/`fetch` are unavailable in the sandbox.
 
 8. **Errors go in the result, not as MCP protocol errors.** Claude Code has a bug where `isError: true` displays as `Error: undefined` (see presearch.md §Loop 0). Put actionable error info in the normal result payload under `result.error`.
 
 ## Security Rules
 
-1. **Privacy invariant (non-negotiable)**: the `kg.personal` binding is injected into the sandbox environment ONLY when the tool call's `scope` param includes `'personal'`. This is enforced at the tool dispatcher, not inside the sandbox. The 15-test adversarial suite is a merge blocker — any test failure blocks the merge.
+1. **Privacy invariant (non-negotiable)**: the `pinakes.personal` binding is injected into the sandbox environment ONLY when the tool call's `scope` param includes `'personal'`. This is enforced at the tool dispatcher, not inside the sandbox. The 15-test adversarial suite is a merge blocker — any test failure blocks the merge.
 
 2. **Sandbox globals: disable these at QuickJS runtime setup**:
    - `eval`
@@ -209,32 +209,32 @@ pnpm run kg -- import --scope <s> --in f   # restore from dump
    - Memory: `runtime.setMemoryLimit(64 * 1024 * 1024)` — 64MB hard cap (WASM-enforced)
    - CPU: `shouldInterruptAfterDeadline` with `timeout_ms` param (default 2000, max 10000)
 
-4. **Ingested text is untrusted data, never code.** The sandbox never evaluates content from the KG. Any string from `kg.project.fts()` etc. is just a string.
+4. **Ingested text is untrusted data, never code.** The sandbox never evaluates content from the KG. Any string from `pinakes.project.fts()` etc. is just a string.
 
-5. **API keys**: read from env at startup (`KG_VOYAGE_API_KEY`, `KG_OPENAI_API_KEY`, `KG_OLLAMA_URL`). **Never log them.** Never write them to disk from our code.
+5. **API keys**: read from env at startup (`PINAKES_VOYAGE_API_KEY`, `PINAKES_OPENAI_API_KEY`, `PINAKES_OLLAMA_URL`). **Never log them.** Never write them to disk from our code.
 
 6. **Cross-scope tagging**: every result object returned from a `scope='both'` call MUST include `source_scope: 'project' | 'personal'`. The LLM is responsible for respecting it — our job is to surface it, not to enforce what the LLM does with it. (This is the user's explicit tradeoff: LLM-driven bridge is a feature, not a bug. Document it in the tool description.)
 
-7. **Audit log — SPLIT BY SCOPE (non-negotiable)**: every tool call appends a row to `kg_audit` with `ts`, `tool_name`, `scope_requested`, `caller_ctx`, `response_tokens`, `error`. **The JSONL mirror path depends on scope**:
-   - `scope='project'` → `.kg/audit.jsonl` (in the user's repo; safe for `git add .`)
-   - `scope='personal'` OR `scope='both'` → `~/.kg/audit.jsonl` (in `$HOME`, never in a repo)
+7. **Audit log — SPLIT BY SCOPE (non-negotiable)**: every tool call appends a row to `pinakes_audit` with `ts`, `tool_name`, `scope_requested`, `caller_ctx`, `response_tokens`, `error`. **The JSONL mirror path depends on scope**:
+   - `scope='project'` → `~/.pinakes/projects/<mangled>/audit.jsonl`
+   - `scope='personal'` OR `scope='both'` → `~/.pinakes/audit.jsonl`
    - **Never** write personal query text or snippets to a path inside the project repo. Doing so creates a leak via `git add .`.
-   - The SQLite `kg_audit` table in `.kg/kg.db` is also project-scoped — any personal-scope audit row goes to a separate `kg_audit` table in `~/.kg/kg.db`, not the project DB.
+   - The SQLite `pinakes_audit` table in `~/.pinakes/projects/<mangled>/pinakes.db` is project-scoped — any personal-scope audit row goes to a separate `pinakes_audit` table in `~/.pinakes/pinakes.db`, not the project DB.
 
 8. **Vendoring fallback for `@cloudflare/codemode`**: we only use 4 exports (`generateTypesFromJsonSchema`, `normalizeCode`, `sanitizeToolName`, `ToolDispatcher`). If Cloudflare abandons the package or ships an incompatible breaking change, copy the relevant functions into our repo and pin. Total size <400 LOC.
 
 ## AI Rules
 
-1. **We don't call LLMs on the query path by default.** The calling LLM is the client's concern. The exception is the opt-in `expand` param on `kg_search` (D38) which uses the LLM provider factory (D36) for multi-query expansion — non-fatal, falls back to the original query if no provider is available. The contradiction detector (Phase 8 H) also uses the LLM provider but is a background CLI command, not a query-path call.
+1. **We don't call LLMs on the query path by default.** The calling LLM is the client's concern. The exception is the opt-in `expand` param on `search` (D38) which uses the LLM provider factory (D36) for multi-query expansion — non-fatal, falls back to the original query if no provider is available. The contradiction detector (Phase 8 H) also uses the LLM provider but is a background CLI command, not a query-path call.
 
 2. **Gap-detection sub-agent is rate-limited**: max 1 call per hour background, or explicit user command. Never per query.
 
 3. **Embedder choice is env-driven**:
    ```
-   KG_EMBED_PROVIDER=transformers  # default (bundled)
-   KG_EMBED_PROVIDER=ollama        # requires KG_OLLAMA_URL + KG_OLLAMA_MODEL
-   KG_EMBED_PROVIDER=voyage        # requires KG_VOYAGE_API_KEY
-   KG_EMBED_PROVIDER=openai        # requires KG_OPENAI_API_KEY
+   PINAKES_EMBED_PROVIDER=transformers  # default (bundled)
+   PINAKES_EMBED_PROVIDER=ollama        # requires PINAKES_OLLAMA_URL + PINAKES_OLLAMA_MODEL
+   PINAKES_EMBED_PROVIDER=voyage        # requires PINAKES_VOYAGE_API_KEY
+   PINAKES_EMBED_PROVIDER=openai        # requires PINAKES_OPENAI_API_KEY
    ```
 
 4. **Embedder failure is non-fatal**: if the configured embedder fails during ingest, log a warning, insert the node+chunks without vec rows, continue. Query-time degrades gracefully to FTS5-only for affected chunks.
@@ -283,33 +283,30 @@ pnpm run kg -- import --scope <s> --in f   # restore from dump
 ## Environment Variables
 
 ```bash
-# Paths
-KG_WIKI_PATH=/path/to/project/.kg/wiki         # required in serve mode; default .kg/wiki
-KG_PROFILE_PATH=~/.kg                          # optional; default ~/.kg
+# Paths — all data lives under PINAKES_ROOT (default ~/.pinakes)
+PINAKES_ROOT=~/.pinakes                             # optional; all data lives here
+PINAKES_WIKI_PATH=                                  # optional override; default ~/.pinakes/projects/<mangled-cwd>/wiki
 
 # Embedder selection
-KG_EMBED_PROVIDER=transformers                 # transformers | ollama | voyage | openai
-KG_EMBED_MODEL=Xenova/all-MiniLM-L6-v2-quantized  # provider-specific
+PINAKES_EMBED_PROVIDER=transformers                 # transformers | ollama | voyage | openai
+PINAKES_EMBED_MODEL=Xenova/all-MiniLM-L6-v2-quantized  # provider-specific
 
-# Ollama config (if KG_EMBED_PROVIDER=ollama)
-KG_OLLAMA_URL=http://localhost:11434
-KG_OLLAMA_MODEL=nomic-embed-text
+# Ollama config (if PINAKES_EMBED_PROVIDER=ollama)
+PINAKES_OLLAMA_URL=http://localhost:11434
+PINAKES_OLLAMA_MODEL=nomic-embed-text
 
 # API keys (if configured)
-KG_VOYAGE_API_KEY=
-KG_OPENAI_API_KEY=
+PINAKES_VOYAGE_API_KEY=
+PINAKES_OPENAI_API_KEY=
 
 # Runtime tuning
-KG_MAX_MEMORY_MB=64                            # QuickJS memory cap
-KG_MAX_TIMEOUT_MS=10000                        # QuickJS hard timeout ceiling
-KG_WARM_POOL_SIZE=2                            # concurrent sandbox isolates
-KG_LOG_LEVEL=info                              # pino level
+PINAKES_MAX_MEMORY_MB=64                            # QuickJS memory cap
+PINAKES_MAX_TIMEOUT_MS=10000                        # QuickJS hard timeout ceiling
+PINAKES_WARM_POOL_SIZE=2                            # concurrent sandbox isolates
+PINAKES_LOG_LEVEL=info                              # pino level
 
 # Write path
-KG_MAX_WRITE_SIZE=102400                       # max bytes per wiki write (100KB default)
-
-# Observability
-KG_AUDIT_JSONL_PATH=.kg/audit.jsonl            # mirror location
+PINAKES_MAX_WRITE_SIZE=102400                       # max bytes per wiki write (100KB default)
 ```
 
 **Never commit any env with secret values.** Use `.env.example` for placeholders, `.env` is gitignored.

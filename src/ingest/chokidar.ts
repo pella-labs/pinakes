@@ -6,7 +6,7 @@ import { logger } from '../observability/logger.js';
 import type { IngestEvent, IngestEventKind, IngestSource, Scope } from './source.js';
 
 /**
- * `ChokidarWatcher` — file-system implementation of `IngestSource` for KG-MCP Phase 2.
+ * `ChokidarWatcher` — file-system implementation of `IngestSource` for Pinakes Phase 2.
  *
  * Watches a wiki directory recursively for `*.md` changes, with the two
  * critical adaptations for Pharos's wiki-updater (CLAUDE.md §Database Rules #4,

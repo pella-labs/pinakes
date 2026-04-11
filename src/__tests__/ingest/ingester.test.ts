@@ -14,14 +14,14 @@ import {
 import { manifestPathFor, readManifest } from '../../ingest/manifest.js';
 
 /**
- * Ingester tests for KG-MCP Phase 2.
+ * Ingester tests for Pinakes Phase 2.
  *
  * Five tests covering the load-bearing invariants:
  *   1. Round-trip — file ingest → row counts match the chunker output
  *   2. Per-chunk skip-unchanged — re-ingest with one paragraph mutated → exactly 1 embedder call
  *   3. Transaction rollback — failure mid-ingest leaves DB clean
  *   4. Manifest write — successful ingest persists the source_sha and chunk_shas
- *   5. kg_log append — every ingest emits an event row
+ *   5. pinakes_log append — every ingest emits an event row
  *   6. Single-flight — 3 parallel calls for the same path → 1 actual ingest
  *
  * Each test uses a fresh tmpdir + DB so they don't share state. The embedder
@@ -46,14 +46,14 @@ describe('ingest/ingester (Phase 2)', () => {
 
   beforeEach(() => {
     __resetSingleFlightForTests();
-    const tmp = mkdtempSync(join(tmpdir(), 'kg-ingest-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'pinakes-ingest-'));
     const wikiDir = join(tmp, 'wiki');
     mkdirSync(wikiDir, { recursive: true });
 
     // Copy auth.md fixture into the temp wiki dir
     copyFileSync(join(FIXTURE_DIR, 'auth.md'), join(wikiDir, 'auth.md'));
 
-    const bundle = openDb(join(tmp, 'kg.db'));
+    const bundle = openDb(join(tmp, 'pinakes.db'));
     const counted = new CountingEmbedder(getDefaultEmbedder());
     const ingester = new IngesterService(bundle, counted, 'project', wikiDir);
 
@@ -80,26 +80,26 @@ describe('ingest/ingester (Phase 2)', () => {
     expect(result.embedder_calls).toBe(result.chunks_added); // first ingest, no skips
 
     const nodeCount = c.bundle.writer
-      .prepare('SELECT count(*) AS c FROM kg_nodes WHERE scope = ?')
+      .prepare('SELECT count(*) AS c FROM pinakes_nodes WHERE scope = ?')
       .get('project') as { c: number };
     expect(nodeCount.c).toBe(4);
 
     const chunkCount = c.bundle.writer
       .prepare(
-        'SELECT count(*) AS c FROM kg_chunks ch JOIN kg_nodes n ON ch.node_id = n.id WHERE n.scope = ?'
+        'SELECT count(*) AS c FROM pinakes_chunks ch JOIN pinakes_nodes n ON ch.node_id = n.id WHERE n.scope = ?'
       )
       .get('project') as { c: number };
     expect(chunkCount.c).toBe(result.chunks_added);
 
     // FTS5 was populated by the trigger — searching for "hashPassword" finds something
     const ftsHits = c.bundle.writer
-      .prepare("SELECT count(*) AS c FROM kg_chunks_fts WHERE text MATCH 'hashpassword'")
+      .prepare("SELECT count(*) AS c FROM pinakes_chunks_fts WHERE text MATCH 'hashpassword'")
       .get() as { c: number };
     expect(ftsHits.c).toBeGreaterThanOrEqual(1);
 
     // sqlite-vec table got 384-dim float32 inserts
     const vecCount = c.bundle.writer
-      .prepare('SELECT count(*) AS c FROM kg_chunks_vec')
+      .prepare('SELECT count(*) AS c FROM pinakes_chunks_vec')
       .get() as { c: number };
     expect(vecCount.c).toBe(result.chunks_added);
   });
@@ -152,7 +152,7 @@ describe('ingest/ingester (Phase 2)', () => {
     // The current implementation logs the embedder failure and continues
     // (per §AI Rules #4 — embedder failure is non-fatal). So we test the
     // OTHER kind of failure: a row-level violation in the SQL transaction.
-    // Inject a duplicate kg_chunks id by manually inserting one BEFORE the
+    // Inject a duplicate pinakes_chunks id by manually inserting one BEFORE the
     // transaction runs, then re-ingesting. The INSERT inside the transaction
     // will fail with a primary-key violation, and the whole transaction
     // should roll back.
@@ -173,7 +173,7 @@ describe('ingest/ingester (Phase 2)', () => {
     // rows after this. The transaction rollback test instead has to provoke
     // a SQL-level error.
 
-    // Provoke a SQL error: pre-create a row in kg_log with the SAME ts that
+    // Provoke a SQL error: pre-create a row in pinakes_log with the SAME ts that
     // the ingester will use, AND violate a NOT NULL constraint by manually
     // tampering. Easier path: use a custom test that reaches into the
     // transaction by binding a chunk text containing a NULL byte or
@@ -187,7 +187,7 @@ describe('ingest/ingester (Phase 2)', () => {
 
     await c.ingester.ingestFile(join(c.wikiDir, 'auth.md'));
     const beforeNodes = (
-      c.bundle.writer.prepare('SELECT count(*) AS c FROM kg_nodes').get() as { c: number }
+      c.bundle.writer.prepare('SELECT count(*) AS c FROM pinakes_nodes').get() as { c: number }
     ).c;
 
     // Test: a transaction with a constraint violation rolls back.
@@ -197,13 +197,13 @@ describe('ingest/ingester (Phase 2)', () => {
     const txn = c.bundle.writer.transaction(() => {
       const w = c.bundle.writer;
       w.prepare(
-        `INSERT INTO kg_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at)
+        `INSERT INTO pinakes_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at)
          VALUES ('rollback-test', 'project', 'file:///x.md', '', 'section', NULL, 'x', 'sha', 1, 1, 1, 1)`
       ).run();
       // This second insert with the SAME id will throw a UNIQUE violation,
       // and better-sqlite3's transaction wrapper will roll back the first.
       w.prepare(
-        `INSERT INTO kg_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at)
+        `INSERT INTO pinakes_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at)
          VALUES ('rollback-test', 'project', 'file:///y.md', '', 'section', NULL, 'y', 'sha', 1, 1, 1, 1)`
       ).run();
     });
@@ -212,12 +212,12 @@ describe('ingest/ingester (Phase 2)', () => {
 
     // Row count is unchanged after the rollback
     const afterNodes = (
-      c.bundle.writer.prepare('SELECT count(*) AS c FROM kg_nodes').get() as { c: number }
+      c.bundle.writer.prepare('SELECT count(*) AS c FROM pinakes_nodes').get() as { c: number }
     ).c;
     expect(afterNodes).toBe(beforeNodes);
     // Specifically the rollback-test row is NOT present
     const probe = c.bundle.writer
-      .prepare('SELECT count(*) AS c FROM kg_nodes WHERE id = ?')
+      .prepare('SELECT count(*) AS c FROM pinakes_nodes WHERE id = ?')
       .get('rollback-test') as { c: number };
     expect(probe.c).toBe(0);
   });
@@ -241,18 +241,18 @@ describe('ingest/ingester (Phase 2)', () => {
     }
   });
 
-  it('kg_log append: every ingest emits an event row', async () => {
+  it('pinakes_log append: every ingest emits an event row', async () => {
     const c = ctx!;
     const path = join(c.wikiDir, 'auth.md');
 
     const before = (
-      c.bundle.writer.prepare('SELECT count(*) AS c FROM kg_log').get() as { c: number }
+      c.bundle.writer.prepare('SELECT count(*) AS c FROM pinakes_log').get() as { c: number }
     ).c;
 
     await c.ingester.ingestFile(path);
 
     const after = c.bundle.writer
-      .prepare('SELECT * FROM kg_log ORDER BY id DESC LIMIT 1')
+      .prepare('SELECT * FROM pinakes_log ORDER BY id DESC LIMIT 1')
       .get() as { ts: number; scope: string; kind: string; source_uri: string; payload: string };
 
     expect(after.kind).toBe('ingest:done');
@@ -267,7 +267,7 @@ describe('ingest/ingester (Phase 2)', () => {
     expect(payload.chunks_added).toBeGreaterThan(0);
 
     const finalCount = (
-      c.bundle.writer.prepare('SELECT count(*) AS c FROM kg_log').get() as { c: number }
+      c.bundle.writer.prepare('SELECT count(*) AS c FROM pinakes_log').get() as { c: number }
     ).c;
     expect(finalCount).toBe(before + 1);
   });
@@ -295,7 +295,7 @@ describe('ingest/ingester (Phase 2)', () => {
     // DB only has one set of nodes/chunks
     const nodeCount = (
       c.bundle.writer
-        .prepare('SELECT count(*) AS c FROM kg_nodes WHERE scope = ?')
+        .prepare('SELECT count(*) AS c FROM pinakes_nodes WHERE scope = ?')
         .get('project') as { c: number }
     ).c;
     expect(nodeCount).toBe(4);

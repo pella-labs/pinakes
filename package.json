@@ -1,6 +1,6 @@
 {
   "name": "@pella-labs/pinakes",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local stdio MCP server that indexes a Karpathy-style two-level knowledge wiki into SQLite and exposes it to a coding LLM via Cloudflare-style code-mode.",
   "type": "module",
   "bin": {
@@ -23,9 +23,12 @@
     "test:coverage": "vitest run --coverage",
     "test:privacy": "vitest run src/__tests__/privacy --passWithNoTests",
     "test:budget": "vitest run src/__tests__/budget --passWithNoTests",
+    "eval:tool-selection": "tsx src/__tests__/eval/tool-selection.eval.ts",
+    "eval:tool-selection:pinakes": "tsx src/__tests__/eval/tool-selection.eval.ts --pinakes-only",
+    "eval:variants": "tsx src/__tests__/eval/run-variants.ts",
     "db:migrate": "drizzle-kit migrate",
     "db:generate": "drizzle-kit generate",
-    "kg": "tsx src/cli/index.ts",
+    "pinakes": "tsx src/cli/index.ts",
     "prepublishOnly": "pnpm run build",
     "publish:npm": "pnpm publish --access public"
   },
@@ -45,6 +48,9 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.101",
+    "@anthropic-ai/claude-code": "^2.1.101",
+    "@anthropic-ai/sdk": "^0.88.0",
     "@types/better-sqlite3": "^7.6.0",
     "@types/json-schema": "^7.0.15",
     "@types/node": "^24.0.0",

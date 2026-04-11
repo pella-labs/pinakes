@@ -246,14 +246,14 @@ describe('golden-set: wiki-100', () => {
 
   beforeAll(async () => {
     __resetSingleFlightForTests();
-    tmp = mkdtempSync(join(tmpdir(), 'kg-golden-100-'));
+    tmp = mkdtempSync(join(tmpdir(), 'pinakes-golden-100-'));
     const tmpWiki = join(tmp, 'wiki');
     cpSync(WIKI_100, tmpWiki, { recursive: true });
 
     embedder = new CountingEmbedder(getDefaultEmbedder());
     await embedder.warmup();
 
-    bundle = openDb(join(tmp, 'kg.db'));
+    bundle = openDb(join(tmp, 'pinakes.db'));
     const ingester = new IngesterService(bundle, embedder, 'project', tmpWiki);
     for (const file of listMarkdownFiles(tmpWiki)) {
       await ingester.ingestFile(file);
@@ -348,14 +348,14 @@ describe('golden-set: wiki-1000', () => {
 
   beforeAll(async () => {
     __resetSingleFlightForTests();
-    tmp = mkdtempSync(join(tmpdir(), 'kg-golden-1000-'));
+    tmp = mkdtempSync(join(tmpdir(), 'pinakes-golden-1000-'));
     const tmpWiki = join(tmp, 'wiki');
     cpSync(WIKI_1000, tmpWiki, { recursive: true });
 
     embedder = new CountingEmbedder(getDefaultEmbedder());
     await embedder.warmup();
 
-    bundle = openDb(join(tmp, 'kg.db'));
+    bundle = openDb(join(tmp, 'pinakes.db'));
     const ingester = new IngesterService(bundle, embedder, 'project', tmpWiki);
     for (const file of listMarkdownFiles(tmpWiki)) {
       await ingester.ingestFile(file);

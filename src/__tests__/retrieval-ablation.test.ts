@@ -108,14 +108,14 @@ describe('retrieval ablation: wiki-1000', () => {
 
   beforeAll(async () => {
     __resetSingleFlightForTests();
-    tmp = mkdtempSync(join(tmpdir(), 'kg-ablation-'));
+    tmp = mkdtempSync(join(tmpdir(), 'pinakes-ablation-'));
     const tmpWiki = join(tmp, 'wiki');
     cpSync(WIKI_1000, tmpWiki, { recursive: true });
 
     embedder = new CountingEmbedder(getDefaultEmbedder());
     await embedder.warmup();
 
-    bundle = openDb(join(tmp, 'kg.db'));
+    bundle = openDb(join(tmp, 'pinakes.db'));
     const ingester = new IngesterService(bundle, embedder, 'project', tmpWiki);
     for (const file of listMarkdownFiles(tmpWiki)) {
       await ingester.ingestFile(file);

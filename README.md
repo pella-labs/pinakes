@@ -4,8 +4,8 @@ Local stdio MCP server that indexes a [Karpathy-style](https://gist.github.com/k
 
 **Two tools. One process. Works with any MCP client.**
 
-- `kg_search` — hybrid FTS5 + vector search ranked by Reciprocal Rank Fusion
-- `kg_execute` — run JS in a QuickJS sandbox with `kg.project.*` bindings for search, graph traversal, wiki writes, and more
+- `search` — hybrid FTS5 + vector search ranked by Reciprocal Rank Fusion
+- `execute` — run JS in a QuickJS sandbox with `pinakes.project.*` bindings for search, graph traversal, wiki writes, and more
 
 Markdown is canonical. SQLite is the index. If the index is corrupted or lost, rebuild it from markdown.
 
@@ -103,33 +103,33 @@ The server indexes all `.md` files in the wiki directory, watches for changes, a
 ### Search
 
 ```
-kg_search({ query: "authentication flow", scope: "project" })
+search({ query: "authentication flow", scope: "project" })
 ```
 
 ### Execute (code-mode)
 
 ```javascript
 // Browse the wiki index
-kg_execute({ code: `return kg.project.index()` })
+execute({ code: `return pinakes.project.index()` })
 
 // Full-text search
-kg_execute({ code: `return kg.project.fts("bcrypt")` })
+execute({ code: `return pinakes.project.fts("bcrypt")` })
 
 // Node lookup + neighbors
-kg_execute({ code: `
-  const node = kg.project.get("sha1-id-here");
-  const neighbors = kg.project.neighbors(node.id, { depth: 2 });
+execute({ code: `
+  const node = pinakes.project.get("sha1-id-here");
+  const neighbors = pinakes.project.neighbors(node.id, { depth: 2 });
   return { node, neighbors };
 ` })
 
 // Write a wiki page
-kg_execute({ code: `
-  return kg.project.write("decisions/use-postgres.md", "# Use PostgreSQL\\nWe chose Postgres because...");
+execute({ code: `
+  return pinakes.project.write("decisions/use-postgres.md", "# Use PostgreSQL\\nWe chose Postgres because...");
 ` })
 
 // Query across both scopes
-kg_execute({
-  code: `return kg.project.hybrid("deploy process")`,
+execute({
+  code: `return pinakes.project.hybrid("deploy process")`,
   scope: "both"
 })
 ```
@@ -153,23 +153,23 @@ The default embedder is bundled (`Xenova/all-MiniLM-L6-v2`, 384 dimensions, runs
 ### Ollama (local, free)
 
 ```bash
-export KG_EMBED_PROVIDER=ollama
-export KG_OLLAMA_URL=http://localhost:11434
-export KG_OLLAMA_MODEL=nomic-embed-text
+export PINAKES_EMBED_PROVIDER=ollama
+export PINAKES_OLLAMA_URL=http://localhost:11434
+export PINAKES_OLLAMA_MODEL=nomic-embed-text
 ```
 
 ### Voyage AI (cloud, paid)
 
 ```bash
-export KG_EMBED_PROVIDER=voyage
-export KG_VOYAGE_API_KEY=your-key-here
+export PINAKES_EMBED_PROVIDER=voyage
+export PINAKES_VOYAGE_API_KEY=your-key-here
 ```
 
 ### OpenAI (cloud, paid)
 
 ```bash
-export KG_EMBED_PROVIDER=openai
-export KG_OPENAI_API_KEY=your-key-here
+export PINAKES_EMBED_PROVIDER=openai
+export PINAKES_OPENAI_API_KEY=your-key-here
 ```
 
 Changing the embedder requires a full rebuild (`pinakes rebuild`) since the vector dimensions change.
@@ -178,7 +178,7 @@ Changing the embedder requires a full rebuild (`pinakes rebuild`) since the vect
 
 - **Single process**: MCP server, file watcher, SQLite writer, read pool, embedder, and QuickJS sandbox all in one Node process
 - **Single writer, multi reader**: one writer connection + 2 reader connections per DB, WAL mode
-- **Two-level KG**: project wiki (`./wiki/`) + personal wiki (`~/.kg/wiki/`), fully isolated by default
+- **Two-level KG**: project wiki (`./wiki/`) + personal wiki (`~/.pinakes/wiki/`), fully isolated by default
 - **Privacy invariant**: personal KG bindings are only injected when `scope` includes `'personal'`
 - **Budget gate**: every response stays under `max_tokens` (default 5000, hard cap 25000)
 - **Deterministic IDs**: `sha1(scope + ':' + source_uri + ':' + section_path)` means re-indexing is idempotent

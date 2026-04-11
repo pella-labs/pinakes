@@ -1,26 +1,27 @@
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { closeDb, openDb } from '../db/client.js';
-import { KG_TABLES, KG_VIRTUAL_TABLES } from '../db/schema.js';
+import { PINAKES_TABLES, PINAKES_VIRTUAL_TABLES } from '../db/schema.js';
+import { resolveCliDbPath } from '../paths.js';
 
 /**
- * `kg status` — health check for KG-MCP Phase 2.
+ * `pinakes status` — health check for Pinakes Phase 2.
  *
  * Opens the project + personal DBs (if they exist), reports row counts per
  * table, schema version, last full rebuild timestamp, and SQLite version.
  *
- * No DB writes — strictly read-only. Safe to run while a `kg serve` instance
+ * No DB writes — strictly read-only. Safe to run while a `pinakes serve` instance
  * is also running on the same DB (WAL mode + read connection makes this fine).
  */
 
 export interface StatusOptions {
-  /** Path to project DB. If omitted, defaults to `.pharos/kg.db` from wikiPath if given. */
+  /** Project root directory (default: cwd) */
+  projectRoot?: string;
+  /** Path to project DB override */
   dbPath?: string;
-  /** Path to project wiki dir, used to derive default dbPath if dbPath omitted */
+  /** Path to project wiki dir (unused in new layout, kept for backwards compat) */
   wikiPath?: string;
-  /** Path to personal DB (default: `~/.pharos/profile/kg.db`) */
+  /** Path to personal DB (default: `~/.pinakes/pinakes.db`) */
   profileDbPath?: string;
 }
 
@@ -40,12 +41,12 @@ export interface ScopeStatus {
  * `kg status --json`).
  */
 export function statusCommand(options: StatusOptions = {}): ScopeStatus[] {
-  const projectDbPath = resolveProjectDb(options);
-  const profileDbPath = resolveProfileDb(options);
+  const projectDb = resolveCliDbPath(options, 'project');
+  const profileDb = resolveCliDbPath(options, 'personal');
 
   return [
-    inspectScope('project', projectDbPath),
-    inspectScope('personal', profileDbPath),
+    inspectScope('project', projectDb),
+    inspectScope('personal', profileDb),
   ];
 }
 
@@ -68,7 +69,7 @@ export function renderStatus(statuses: ScopeStatus[]): string {
     lines.push(
       `  last_full_rebuild: ${s.lastFullRebuild ? new Date(s.lastFullRebuild).toISOString() : '<never>'}`
     );
-    for (const table of [...KG_TABLES, ...KG_VIRTUAL_TABLES]) {
+    for (const table of [...PINAKES_TABLES, ...PINAKES_VIRTUAL_TABLES]) {
       const count = s.rowCounts[table] ?? 0;
       lines.push(`  ${table.padEnd(20)} ${count}`);
     }
@@ -104,16 +105,16 @@ function inspectScope(scope: 'project' | 'personal', dbPath: string): ScopeStatu
     }).v;
 
     const schemaRow = bundle.writer
-      .prepare("SELECT value FROM kg_meta WHERE key = 'schema_version'")
+      .prepare("SELECT value FROM pinakes_meta WHERE key = 'schema_version'")
       .get() as { value: string } | undefined;
     status.schemaVersion = schemaRow?.value ?? null;
 
     const rebuildRow = bundle.writer
-      .prepare("SELECT value FROM kg_meta WHERE key = 'last_full_rebuild'")
+      .prepare("SELECT value FROM pinakes_meta WHERE key = 'last_full_rebuild'")
       .get() as { value: string } | undefined;
     status.lastFullRebuild = rebuildRow ? parseInt(rebuildRow.value, 10) : null;
 
-    for (const table of [...KG_TABLES, ...KG_VIRTUAL_TABLES]) {
+    for (const table of [...PINAKES_TABLES, ...PINAKES_VIRTUAL_TABLES]) {
       try {
         const row = bundle.writer.prepare(`SELECT count(*) AS c FROM ${table}`).get() as {
           c: number;
@@ -131,21 +132,3 @@ function inspectScope(scope: 'project' | 'personal', dbPath: string): ScopeStatu
   return status;
 }
 
-function resolveProjectDb(options: StatusOptions): string {
-  if (options.dbPath) return resolveAbs(options.dbPath);
-  if (options.wikiPath) {
-    return resolve(dirname(resolveAbs(options.wikiPath)), '.pinakes', 'pinakes.db');
-  }
-  return resolve(process.cwd(), '.pinakes', 'pinakes.db');
-}
-
-function resolveProfileDb(options: StatusOptions): string {
-  if (options.profileDbPath) return resolveAbs(options.profileDbPath);
-  const env = process.env.KG_PROFILE_PATH;
-  const profileDir = env ? resolveAbs(env) : resolve(homedir(), '.pharos/profile');
-  return resolve(profileDir, 'kg.db');
-}
-
-function resolveAbs(p: string): string {
-  return isAbsolute(p) ? p : resolve(process.cwd(), p);
-}

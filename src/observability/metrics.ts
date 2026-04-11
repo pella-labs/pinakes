@@ -76,7 +76,7 @@ export function installSighupHandler(): void {
   process.on('SIGHUP', () => {
     const snap = metrics.snapshot();
     // Write directly to stderr to avoid pino's async buffering.
-    process.stderr.write(JSON.stringify({ kg_mcp_metrics: snap }) + '\n');
+    process.stderr.write(JSON.stringify({ pinakes_metrics: snap }) + '\n');
     logger.info('SIGHUP: metrics dumped to stderr');
   });
 }

@@ -44,11 +44,11 @@ export function toStoredKey(absPath: string, wikiRoot: string, scope: Scope): st
 }
 
 /**
- * Consistency manifest for KG-MCP Phase 2.
+ * Consistency manifest for Pinakes Phase 2.
  *
  * Lives at:
- *   - `<wikiPath>/../.pinakes/manifest.json` for project scope
- *   - `<profilePath>/../.pinakes/manifest.json` for personal scope
+ *   - `~/.pinakes/projects/<mangled>/manifest.json` for project scope
+ *   - `~/.pinakes/manifest.json` for personal scope
  *
  * **What it stores**: per ingested file, the file-level `source_sha` and
  * the list of per-chunk `chunk_shas` that ingest produced. This is the
@@ -248,11 +248,11 @@ export function checkConsistency(
   if (writer) {
     try {
       const rows = writer
-        .prepare('SELECT DISTINCT source_uri FROM kg_nodes')
+        .prepare('SELECT DISTINCT source_uri FROM pinakes_nodes')
         .all() as Array<{ source_uri: string }>;
       indexedUris = new Set(rows.map((r) => r.source_uri));
     } catch (err) {
-      logger.warn({ err }, 'checkConsistency: failed to query kg_nodes — falling back to manifest-only');
+      logger.warn({ err }, 'checkConsistency: failed to query pinakes_nodes — falling back to manifest-only');
     }
   }
 
@@ -282,19 +282,29 @@ export function checkConsistency(
 /**
  * Compute the canonical manifest path for a given wiki directory.
  *
- * `<wikiPath>/../.pinakes/manifest.json`
+ * New layout: `<wikiPath>/../manifest.json` (sibling of wiki/ under the
+ * project data dir, e.g. `~/.pinakes/projects/<mangled>/manifest.json`).
  *
- * If a legacy `kg-manifest.json` exists in the parent directory, it is
- * automatically migrated to the new location.
+ * Also checks for legacy locations and migrates if found:
+ *   1. `<wikiPath>/../kg-manifest.json` (Phase 1 flat layout)
+ *   2. `<wikiPath>/../.pinakes/manifest.json` (Phase 2 in-project layout)
  */
 export function manifestPathFor(wikiPath: string): string {
   const parent = dirname(resolve(wikiPath));
-  const newPath = resolve(parent, '.pinakes', 'manifest.json');
-  const legacyPath = resolve(parent, 'kg-manifest.json');
-  if (existsSync(legacyPath) && !existsSync(newPath)) {
-    mkdirSync(dirname(newPath), { recursive: true });
-    renameSync(legacyPath, newPath);
-    logger.info({ from: legacyPath, to: newPath }, 'migrated legacy kg-manifest.json');
+  const newPath = resolve(parent, 'manifest.json');
+
+  // Migrate legacy locations
+  const legacyPaths = [
+    resolve(parent, 'kg-manifest.json'),           // Phase 1
+    resolve(parent, '.pinakes', 'manifest.json'),   // Phase 2 in-project
+  ];
+  for (const legacyPath of legacyPaths) {
+    if (existsSync(legacyPath) && !existsSync(newPath)) {
+      mkdirSync(dirname(newPath), { recursive: true });
+      renameSync(legacyPath, newPath);
+      logger.info({ from: legacyPath, to: newPath }, 'migrated legacy manifest');
+      break;
+    }
   }
   return newPath;
 }

@@ -3,8 +3,8 @@ import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 /**
  * FTS5 full-text search with BM25 ranking and optional snippet extraction.
  *
- * Extracted from `src/sandbox/bindings/kg.ts` so both the sandbox bindings
- * and the `kg_search` MCP tool can share the same query logic. The binding
+ * Extracted from `src/sandbox/bindings/pinakes.ts` so both the sandbox bindings
+ * and the `pinakes_search` MCP tool can share the same query logic. The binding
  * delegates here; the MCP tool calls `hybridSearch` which calls here.
  *
  * **Tokenizer**: `unicode61 remove_diacritics 2` (set in the migration).
@@ -30,7 +30,7 @@ export interface FtsResult {
  * Run an FTS5 MATCH query with BM25 ranking and snippet extraction.
  *
  * @param reader   A read-only `better-sqlite3` connection (from the read pool).
- * @param scope    `'project'` or `'personal'` — filters by `kg_nodes.scope`.
+ * @param scope    `'project'` or `'personal'` — filters by `pinakes_nodes.scope`.
  * @param query    Raw user/LLM query string (will be escaped).
  * @param limit    Max results (clamped to 1..100 by callers).
  * @returns        Results ranked by BM25 (lower rank = better match).
@@ -50,18 +50,18 @@ export function ftsQuery(
       { id: string; text: string; snippet: string; source_uri: string; node_id: string; rank: number; confidence: string; title: string | null; section_path: string }
     >(
       `SELECT c.id AS id, c.text AS text,
-              snippet(kg_chunks_fts, 0, '', '', '…', 64) AS snippet,
+              snippet(pinakes_chunks_fts, 0, '', '', '…', 64) AS snippet,
               n.source_uri AS source_uri,
-              n.id AS node_id, bm25(kg_chunks_fts) AS rank,
+              n.id AS node_id, bm25(pinakes_chunks_fts) AS rank,
               n.confidence AS confidence,
               n.title AS title,
               n.section_path AS section_path
-         FROM kg_chunks_fts f
-         JOIN kg_chunks c ON c.rowid = f.rowid
-         JOIN kg_nodes n ON c.node_id = n.id
+         FROM pinakes_chunks_fts f
+         JOIN pinakes_chunks c ON c.rowid = f.rowid
+         JOIN pinakes_nodes n ON c.node_id = n.id
         WHERE n.scope = ?
-          AND kg_chunks_fts MATCH ?
-        ORDER BY bm25(kg_chunks_fts)
+          AND pinakes_chunks_fts MATCH ?
+        ORDER BY bm25(pinakes_chunks_fts)
         LIMIT ?`
     )
     .all(scope, escaped, limit);

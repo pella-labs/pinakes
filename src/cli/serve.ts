@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, renameSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { existsSync, mkdirSync, renameSync, readdirSync, cpSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -12,8 +11,18 @@ import { Repository } from '../db/repository.js';
 import { ChokidarWatcher } from '../ingest/chokidar.js';
 import { IngesterService } from '../ingest/ingester.js';
 import { checkConsistency, listMarkdownFiles } from '../ingest/manifest.js';
-import { kgExecuteToolConfig, makeKgExecuteHandler } from '../mcp/tools/execute.js';
-import { kgSearchToolConfig, makeKgSearchHandler } from '../mcp/tools/search.js';
+import { executeToolConfig, makeExecuteHandler } from '../mcp/tools/execute.js';
+import { searchToolConfig, makeSearchHandler } from '../mcp/tools/search.js';
+import {
+  resolveAbs,
+  projectWikiPath as defaultProjectWikiPath,
+  projectDbPath as defaultProjectDbPath,
+  projectAuditJsonlPath,
+  personalWikiPath as defaultPersonalWikiPath,
+  personalDbPath as defaultPersonalDbPath,
+  personalAuditJsonlPath,
+  projectDataDir,
+} from '../paths.js';
 import { writeAuditRow, type AuditEntry } from '../observability/audit.js';
 import { child, logger } from '../observability/logger.js';
 import { installSighupHandler, metrics } from '../observability/metrics.js';
@@ -22,14 +31,14 @@ import { QuickJSExecutor } from '../sandbox/executor.js';
 import type { IngestEvent } from '../ingest/source.js';
 
 /**
- * `kg serve` — stdio MCP server for KG-MCP Phase 2.
+ * `pinakes serve` — stdio MCP server for Pinakes Phase 2.
  *
  * Replaces Phase 1's `src/spike.ts` with the production wiring:
  *   1. Open project + (optional) personal SQLite DBs (one writer + 2 readers each)
  *   2. Warm the embedder singleton
  *   3. Run startup consistency check against the manifest → re-ingest stale files
  *   4. Start chokidar watchers for both scopes (with 2s debounce, drop-oldest)
- *   5. Build the McpServer + register `kg_search` and `kg_execute`
+ *   5. Build the McpServer + register `search` and `execute`
  *   6. Connect to StdioServerTransport and listen
  *
  * Graceful shutdown on SIGTERM/SIGINT closes the watchers, drains in-flight
@@ -43,13 +52,15 @@ import type { IngestEvent } from '../ingest/source.js';
  */
 
 export interface ServeOptions {
-  /** Project wiki directory (required) */
-  wikiPath: string;
-  /** Project DB path (default: `<wikiPath>/../.pinakes/pinakes.db`) */
+  /** Project root directory (default: cwd). Used to derive the mirrored data dir under ~/.pinakes/projects/. */
+  projectRoot?: string;
+  /** Project wiki directory (default: `~/.pinakes/projects/<mangled-root>/wiki`) */
+  wikiPath?: string;
+  /** Project DB path (default: `~/.pinakes/projects/<mangled-root>/pinakes.db`) */
   dbPath?: string;
-  /** Personal wiki directory (default: `~/.pharos/profile/wiki` if it exists, else skip personal) */
+  /** Personal wiki directory (default: `~/.pinakes/wiki`) */
   profilePath?: string;
-  /** Personal DB path (default: `<profilePath>/../.kg/kg.db`) */
+  /** Personal DB path (default: `~/.pinakes/pinakes.db`) */
   profileDbPath?: string;
 }
 
@@ -64,22 +75,21 @@ interface ServerHandle {
  * through the CLI argv path.
  */
 export async function buildServer(options: ServeOptions): Promise<ServerHandle> {
-  const projectWiki = resolveAbs(options.wikiPath);
+  const projectRoot = resolveAbs(options.projectRoot ?? process.cwd());
+  const projectWiki = resolveAbs(options.wikiPath ?? defaultProjectWikiPath(projectRoot));
   if (!existsSync(projectWiki)) {
     mkdirSync(projectWiki, { recursive: true });
     logger.info({ path: projectWiki }, 'created wiki directory');
   }
-  const projectDbPath = resolveAbs(options.dbPath ?? defaultDbPathFor(projectWiki));
-  migrateLegacyDb(projectWiki, projectDbPath);
+  const projectDb = resolveAbs(options.dbPath ?? defaultProjectDbPath(projectRoot));
+  migrateLegacyInProject(projectRoot, projectDb);
 
-  const profileWiki = resolveAbs(options.profilePath ?? defaultProfileWikiPath());
-  const profileDbPath = resolveAbs(
-    options.profileDbPath ?? defaultDbPathFor(profileWiki)
-  );
+  const profileWiki = resolveAbs(options.profilePath ?? defaultPersonalWikiPath());
+  const profileDbPath = resolveAbs(options.profileDbPath ?? defaultPersonalDbPath());
   const enablePersonal = existsSync(profileWiki);
 
   // Step 1: open DBs
-  const projectBundle = openDb(projectDbPath);
+  const projectBundle = openDb(projectDb);
   const personalBundle: DbBundle | null = enablePersonal ? openDb(profileDbPath) : null;
 
   // Step 2: warm embedder
@@ -118,8 +128,8 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
   await executor.warmup();
 
   // Audit JSONL paths (CLAUDE.md §Security #7: scope-split)
-  const projectAuditJsonl = resolve(dirname(projectDbPath), 'audit.jsonl');
-  const personalAuditJsonl = resolve(homedir(), '.kg/audit.jsonl');
+  const projectAuditJsonl = projectAuditJsonlPath(projectRoot);
+  const personalAuditJsonl = personalAuditJsonlPath();
 
   const auditCtx: InstrumentCtx = {
     projectBundle,
@@ -128,21 +138,38 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     personalAuditJsonl,
   };
 
+  // Tool & server naming — configurable via env for eval variants,
+  // defaults to the winning configuration from eval run (80% selection rate).
+  const searchToolName = process.env.PINAKES_TOOL_SEARCH_NAME ?? 'knowledge_search';
+  const executeToolName = process.env.PINAKES_TOOL_EXECUTE_NAME ?? 'knowledge_query';
+  const serverName = process.env.PINAKES_SERVER_NAME ?? 'project-docs';
+
+  const instructions =
+    'IMPORTANT: This project has a curated knowledge base indexed by Pinakes. ' +
+    `ALWAYS use \`${searchToolName}\` as your FIRST action when you need to understand anything about ` +
+    'this project — architecture, conventions, decisions, requirements, data models, ' +
+    'deployment, testing strategy, security, performance constraints, or how subsystems relate. ' +
+    'The knowledge base contains distilled, high-quality documentation that is faster to query ' +
+    'and more token-efficient than reading raw source files with Grep or Read. ' +
+    'Only fall back to Grep/Read/Glob after checking the knowledge base, or when you need ' +
+    'to find exact symbols, read specific source files, or make code changes. ' +
+    `Use \`${executeToolName}\` for advanced operations: graph traversal, gap detection, writing new knowledge.`;
+
   const mcp = new McpServer(
-    { name: 'kg-mcp', version: '0.7.0' },
-    { capabilities: { tools: {} } }
+    { name: serverName, version: '0.3.0' },
+    { capabilities: { tools: {} }, instructions }
   );
-  mcp.registerTool('kg_search', kgSearchToolConfig, instrumentHandler(
-    'kg_search',
-    makeKgSearchHandler({
+  mcp.registerTool(searchToolName, searchToolConfig, instrumentHandler(
+    searchToolName,
+    makeSearchHandler({
       repository, embedder, bundle: projectBundle,
       personalBundle: personalBundle ?? undefined,
     }),
     auditCtx,
   ));
-  mcp.registerTool('kg_execute', kgExecuteToolConfig, instrumentHandler(
-    'kg_execute',
-    makeKgExecuteHandler({
+  mcp.registerTool(executeToolName, executeToolConfig, instrumentHandler(
+    executeToolName,
+    makeExecuteHandler({
       repository, executor, bundle: projectBundle, embedder,
       wikiRoot: projectWiki,
       personalBundle: personalBundle ?? undefined,
@@ -171,7 +198,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     try {
       const diskFiles = listMarkdownFiles(projectWiki);
       const dbCount = (projectBundle.writer
-        .prepare('SELECT COUNT(DISTINCT source_uri) AS cnt FROM kg_nodes WHERE scope = ?')
+        .prepare('SELECT COUNT(DISTINCT source_uri) AS cnt FROM pinakes_nodes WHERE scope = ?')
         .get('project') as { cnt: number })?.cnt ?? 0;
 
       if (diskFiles.length !== dbCount) {
@@ -185,7 +212,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
       if (personalIngester && personalBundle) {
         const personalDiskFiles = listMarkdownFiles(profileWiki);
         const personalDbCount = (personalBundle.writer
-          .prepare('SELECT COUNT(DISTINCT source_uri) AS cnt FROM kg_nodes WHERE scope = ?')
+          .prepare('SELECT COUNT(DISTINCT source_uri) AS cnt FROM pinakes_nodes WHERE scope = ?')
           .get('personal') as { cnt: number })?.cnt ?? 0;
 
         if (personalDiskFiles.length !== personalDbCount) {
@@ -207,7 +234,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    logger.info({ signal }, 'kg-mcp shutting down');
+    logger.info({ signal }, 'pinakes shutting down');
     try {
       clearInterval(healthCheckTimer);
       await projectWatcher.stop();
@@ -229,7 +256,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
  * handlers, listen forever.
  */
 export async function serveCommand(options: ServeOptions): Promise<void> {
-  logger.info({ wikiPath: options.wikiPath }, 'kg-mcp starting');
+  logger.info({ projectRoot: options.projectRoot ?? process.cwd() }, 'pinakes starting');
 
   installSighupHandler();
 
@@ -244,7 +271,7 @@ export async function serveCommand(options: ServeOptions): Promise<void> {
   });
 
   await server.connect(transport);
-  logger.info('kg-mcp listening on stdio');
+  logger.info('pinakes listening on stdio');
 }
 
 // ----------------------------------------------------------------------------
@@ -274,12 +301,12 @@ async function runStartupConsistency(
   if (scope === 'project' && writer) {
     try {
       const orphaned = writer
-        .prepare("SELECT COUNT(*) AS cnt FROM kg_nodes WHERE scope = 'project' AND source_uri LIKE 'file://%'")
+        .prepare("SELECT COUNT(*) AS cnt FROM pinakes_nodes WHERE scope = 'project' AND source_uri LIKE 'file://%'")
         .get() as { cnt: number };
       if (orphaned.cnt > 0) {
         logger.info({ count: orphaned.cnt }, 'migrating legacy absolute-path rows — deleting orphans before re-ingest');
-        writer.exec("DELETE FROM kg_chunks_vec WHERE rowid IN (SELECT c.rowid FROM kg_chunks c JOIN kg_nodes n ON c.node_id = n.id WHERE n.scope = 'project' AND n.source_uri LIKE 'file://%')");
-        writer.exec("DELETE FROM kg_nodes WHERE scope = 'project' AND source_uri LIKE 'file://%'");
+        writer.exec("DELETE FROM pinakes_chunks_vec WHERE rowid IN (SELECT c.rowid FROM pinakes_chunks c JOIN pinakes_nodes n ON c.node_id = n.id WHERE n.scope = 'project' AND n.source_uri LIKE 'file://%')");
+        writer.exec("DELETE FROM pinakes_nodes WHERE scope = 'project' AND source_uri LIKE 'file://%'");
       }
     } catch (err) {
       logger.warn({ err }, 'legacy URI migration check failed — continuing');
@@ -303,36 +330,50 @@ async function runStartupConsistency(
   }
 }
 
-function resolveAbs(p: string): string {
-  return isAbsolute(p) ? p : resolve(process.cwd(), p);
-}
-
-function defaultDbPathFor(wikiDir: string): string {
-  return resolve(dirname(wikiDir), '.pinakes', 'pinakes.db');
-}
-
 /**
- * Migrate legacy kg.db (and WAL/shm) from project root into .pinakes/.
+ * Migrate legacy data from in-project `.pinakes/` (or `kg.db`) to the new
+ * centralized `~/.pinakes/projects/<mangled>/` layout.
+ *
+ * Handles three legacy layouts:
+ *   1. `<projectRoot>/kg.db` — Phase 1 flat layout
+ *   2. `<projectRoot>/.pinakes/` — Phase 2 in-project layout
+ *   3. `~/.pharos/profile/` — legacy personal wiki location
  */
-function migrateLegacyDb(wikiPath: string, newDbPath: string): void {
-  const parent = dirname(resolve(wikiPath));
-  const legacyDb = resolve(parent, 'kg.db');
+function migrateLegacyInProject(projectRoot: string, newDbPath: string): void {
+  const targetDir = projectDataDir(projectRoot);
+
+  // 1. Legacy kg.db in project root
+  const legacyDb = resolve(projectRoot, 'kg.db');
   if (existsSync(legacyDb) && !existsSync(newDbPath)) {
     mkdirSync(dirname(newDbPath), { recursive: true });
     renameSync(legacyDb, newDbPath);
-    // Move WAL and SHM files if they exist
     for (const suffix of ['-wal', '-shm']) {
       const old = legacyDb + suffix;
       if (existsSync(old)) renameSync(old, newDbPath + suffix);
     }
     logger.info({ from: legacyDb, to: newDbPath }, 'migrated legacy kg.db');
   }
-}
 
-function defaultProfileWikiPath(): string {
-  const env = process.env.KG_PROFILE_PATH;
-  if (env) return resolve(env, 'wiki');
-  return resolve(homedir(), '.pharos/profile/wiki');
+  // 2. Legacy in-project .pinakes/ directory
+  const legacyPinakesDir = resolve(projectRoot, '.pinakes');
+  if (existsSync(legacyPinakesDir) && legacyPinakesDir !== targetDir) {
+    mkdirSync(targetDir, { recursive: true });
+    // Copy contents (DB, audit.jsonl, manifest.json, wiki/) to new location
+    // Only migrate files that don't already exist at the target
+    try {
+      const entries = readdirSync(legacyPinakesDir, { withFileTypes: true });
+      for (const entry of entries) {
+        const src = resolve(legacyPinakesDir, entry.name);
+        const dst = resolve(targetDir, entry.name);
+        if (!existsSync(dst)) {
+          cpSync(src, dst, { recursive: true });
+          logger.info({ from: src, to: dst }, 'migrated legacy .pinakes entry');
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, from: legacyPinakesDir, to: targetDir }, 'legacy .pinakes/ migration failed — continuing');
+    }
+  }
 }
 
 // ----------------------------------------------------------------------------

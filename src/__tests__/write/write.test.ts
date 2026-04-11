@@ -10,7 +10,7 @@ import { Repository } from '../../db/repository.js';
 import { IngesterService, __resetSingleFlightForTests } from '../../ingest/ingester.js';
 import { CountingEmbedder, getDefaultEmbedder } from '../../retrieval/embedder.js';
 import { QuickJSExecutor } from '../../sandbox/executor.js';
-import { makeKgExecuteHandler } from '../../mcp/tools/execute.js';
+import { makeExecuteHandler } from '../../mcp/tools/execute.js';
 import { writeWikiFile, appendWikiLog, removeWikiFile, type WriteCounter } from '../../sandbox/bindings/write.js';
 
 /**
@@ -37,14 +37,14 @@ let wikiDir: string;
 beforeAll(async () => {
   __resetSingleFlightForTests();
 
-  tmpRoot = mkdtempSync(join(tmpdir(), 'kg-write-'));
+  tmpRoot = mkdtempSync(join(tmpdir(), 'pinakes-write-'));
   wikiDir = join(tmpRoot, 'wiki');
   mkdirSync(wikiDir, { recursive: true });
   for (const name of readdirSync(FIXTURE_DIR)) {
     copyFileSync(join(FIXTURE_DIR, name), join(wikiDir, name));
   }
 
-  bundle = openDb(join(tmpRoot, 'kg.db'));
+  bundle = openDb(join(tmpRoot, 'pinakes.db'));
   embedder = new CountingEmbedder(getDefaultEmbedder());
   await embedder.warmup();
 
@@ -105,7 +105,7 @@ describe('write path sanitization', () => {
   });
 
   it('rejects symlinks that escape wiki root', () => {
-    const outsideDir = mkdtempSync(join(tmpdir(), 'kg-outside-'));
+    const outsideDir = mkdtempSync(join(tmpdir(), 'pinakes-outside-'));
     const targetFile = join(outsideDir, 'escape.md');
     writeFileSync(targetFile, '# outside');
     const linkPath = join(wikiDir, 'symlink-escape.md');
@@ -221,8 +221,8 @@ describe('append to log.md', () => {
   });
 
   it('creates log.md if it does not exist', () => {
-    const freshWiki = mkdtempSync(join(tmpdir(), 'kg-log-'));
-    const freshBundle = openDb(join(freshWiki, 'kg.db'));
+    const freshWiki = mkdtempSync(join(tmpdir(), 'pinakes-log-'));
+    const freshBundle = openDb(join(freshWiki, 'pinakes.db'));
 
     appendWikiLog(freshWiki, 'first entry', freshCounter(), 'project', freshBundle.writer);
     const content = readFileSync(join(freshWiki, 'log.md'), 'utf-8');
@@ -261,15 +261,15 @@ describe('remove wiki file', () => {
 // ============================================================================
 
 describe('audit trail', () => {
-  it('write produces kg_log row with kind "write"', () => {
+  it('write produces pinakes_log row with kind "write"', () => {
     const countBefore = nextReader(bundle)
-      .prepare<[], { c: number }>(`SELECT count(*) AS c FROM kg_log WHERE kind = 'write'`)
+      .prepare<[], { c: number }>(`SELECT count(*) AS c FROM pinakes_log WHERE kind = 'write'`)
       .get()!.c;
 
     writeWikiFile(wikiDir, 'audit-test.md', '# Audit', freshCounter(), 'project', bundle.writer);
 
     const countAfter = nextReader(bundle)
-      .prepare<[], { c: number }>(`SELECT count(*) AS c FROM kg_log WHERE kind = 'write'`)
+      .prepare<[], { c: number }>(`SELECT count(*) AS c FROM pinakes_log WHERE kind = 'write'`)
       .get()!.c;
 
     expect(countAfter).toBe(countBefore + 1);
@@ -277,31 +277,31 @@ describe('audit trail', () => {
     rmSync(join(wikiDir, 'audit-test.md'), { force: true });
   });
 
-  it('append produces kg_log row with kind "append"', () => {
+  it('append produces pinakes_log row with kind "append"', () => {
     const countBefore = nextReader(bundle)
-      .prepare<[], { c: number }>(`SELECT count(*) AS c FROM kg_log WHERE kind = 'append'`)
+      .prepare<[], { c: number }>(`SELECT count(*) AS c FROM pinakes_log WHERE kind = 'append'`)
       .get()!.c;
 
     appendWikiLog(wikiDir, 'audit entry', freshCounter(), 'project', bundle.writer);
 
     const countAfter = nextReader(bundle)
-      .prepare<[], { c: number }>(`SELECT count(*) AS c FROM kg_log WHERE kind = 'append'`)
+      .prepare<[], { c: number }>(`SELECT count(*) AS c FROM pinakes_log WHERE kind = 'append'`)
       .get()!.c;
 
     expect(countAfter).toBe(countBefore + 1);
   });
 
-  it('remove produces kg_log row with kind "remove"', () => {
+  it('remove produces pinakes_log row with kind "remove"', () => {
     writeFileSync(join(wikiDir, 'audit-remove.md'), '# To remove');
 
     const countBefore = nextReader(bundle)
-      .prepare<[], { c: number }>(`SELECT count(*) AS c FROM kg_log WHERE kind = 'remove'`)
+      .prepare<[], { c: number }>(`SELECT count(*) AS c FROM pinakes_log WHERE kind = 'remove'`)
       .get()!.c;
 
     removeWikiFile(wikiDir, 'audit-remove.md', freshCounter(), 'project', bundle.writer);
 
     const countAfter = nextReader(bundle)
-      .prepare<[], { c: number }>(`SELECT count(*) AS c FROM kg_log WHERE kind = 'remove'`)
+      .prepare<[], { c: number }>(`SELECT count(*) AS c FROM pinakes_log WHERE kind = 'remove'`)
       .get()!.c;
 
     expect(countAfter).toBe(countBefore + 1);
@@ -313,30 +313,30 @@ describe('audit trail', () => {
 // ============================================================================
 
 describe('sandbox write integration', () => {
-  it('kg.project.write() from sandbox creates file on disk', async () => {
-    const handler = makeKgExecuteHandler({
+  it('pinakes.project.write() from sandbox creates file on disk', async () => {
+    const handler = makeExecuteHandler({
       repository, executor, bundle, embedder, wikiRoot: wikiDir,
     });
 
     const res = await handler({
-      code: `return kg.project.write('sandbox-write.md', '# From Sandbox\\n\\nWritten by kg_execute.')`,
+      code: `return pinakes.project.write('sandbox-write.md', '# From Sandbox\\n\\nWritten by execute.')`,
     });
     const envelope = parseResponse(res);
     expect(envelope.result).toEqual({ path: 'sandbox-write.md', bytes: expect.any(Number) });
 
     const content = readFileSync(join(wikiDir, 'sandbox-write.md'), 'utf-8');
-    expect(content).toBe('# From Sandbox\n\nWritten by kg_execute.');
+    expect(content).toBe('# From Sandbox\n\nWritten by execute.');
 
     rmSync(join(wikiDir, 'sandbox-write.md'), { force: true });
   });
 
-  it('kg.project.write() rejects path traversal from sandbox', async () => {
-    const handler = makeKgExecuteHandler({
+  it('pinakes.project.write() rejects path traversal from sandbox', async () => {
+    const handler = makeExecuteHandler({
       repository, executor, bundle, embedder, wikiRoot: wikiDir,
     });
 
     const res = await handler({
-      code: `try { kg.project.write('../escape.md', '# evil'); return 'LEAKED'; } catch(e) { return String(e); }`,
+      code: `try { pinakes.project.write('../escape.md', '# evil'); return 'LEAKED'; } catch(e) { return String(e); }`,
     });
     const envelope = parseResponse(res);
     // The sandbox binding throws with a path traversal error
@@ -345,15 +345,15 @@ describe('sandbox write integration', () => {
     expect(resultStr).toMatch(/path.*(traversal|not allowed)/i);
   });
 
-  it('kg.project.remove() from sandbox deletes file', async () => {
+  it('pinakes.project.remove() from sandbox deletes file', async () => {
     writeFileSync(join(wikiDir, 'sandbox-rm.md'), '# Remove me');
 
-    const handler = makeKgExecuteHandler({
+    const handler = makeExecuteHandler({
       repository, executor, bundle, embedder, wikiRoot: wikiDir,
     });
 
     const res = await handler({
-      code: `return kg.project.remove('sandbox-rm.md')`,
+      code: `return pinakes.project.remove('sandbox-rm.md')`,
     });
     const envelope = parseResponse(res);
     expect(envelope.result).toEqual({ path: 'sandbox-rm.md', removed: true });
@@ -368,13 +368,13 @@ describe('sandbox write integration', () => {
 describe('write + re-ingest round-trip', () => {
   it('written file is indexed after ingest (node + chunks in DB)', async () => {
     // Step 1: write a file via the sandbox binding
-    const handler = makeKgExecuteHandler({
+    const handler = makeExecuteHandler({
       repository, executor, bundle, embedder, wikiRoot: wikiDir,
     });
 
     const content = '# Integration Test\n\n## Section A\n\nThis is a test of the write-then-ingest pipeline.\n\n## Section B\n\nSecond section with distinct content about database indexing.\n';
     const res = await handler({
-      code: `return kg.project.write('ingest-roundtrip.md', ${JSON.stringify(content)})`,
+      code: `return pinakes.project.write('ingest-roundtrip.md', ${JSON.stringify(content)})`,
     });
     const envelope = parseResponse(res);
     expect(envelope.result.path).toBe('ingest-roundtrip.md');
@@ -388,14 +388,14 @@ describe('write + re-ingest round-trip', () => {
     const sourceUri = 'ingest-roundtrip.md';
     const nodes = reader
       .prepare<[string], { id: string; section_path: string }>(
-        `SELECT id, section_path FROM kg_nodes WHERE source_uri = ?`
+        `SELECT id, section_path FROM pinakes_nodes WHERE source_uri = ?`
       )
       .all(sourceUri);
     expect(nodes.length).toBeGreaterThanOrEqual(1);
 
     const chunks = reader
       .prepare<[string], { id: string; text: string }>(
-        `SELECT c.id, c.text FROM kg_chunks c JOIN kg_nodes n ON c.node_id = n.id WHERE n.source_uri = ?`
+        `SELECT c.id, c.text FROM pinakes_chunks c JOIN pinakes_nodes n ON c.node_id = n.id WHERE n.source_uri = ?`
       )
       .all(sourceUri);
     expect(chunks.length).toBeGreaterThanOrEqual(1);
@@ -404,9 +404,9 @@ describe('write + re-ingest round-trip', () => {
     // Step 4: verify the written content is queryable via FTS
     const ftsHits = reader
       .prepare<[string, number], { id: string }>(
-        `SELECT c.id FROM kg_chunks_fts f
-         JOIN kg_chunks c ON c.rowid = f.rowid
-         WHERE kg_chunks_fts MATCH ?
+        `SELECT c.id FROM pinakes_chunks_fts f
+         JOIN pinakes_chunks c ON c.rowid = f.rowid
+         WHERE pinakes_chunks_fts MATCH ?
          LIMIT ?`
       )
       .all('"write-then-ingest"', 5);

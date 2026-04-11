@@ -56,7 +56,7 @@ export function createLlmProvider(mcpServer?: McpServerLike): LlmProvider {
   }
 
   // 2. Ollama
-  const ollamaUrl = process.env['KG_OLLAMA_URL'];
+  const ollamaUrl = process.env['PINAKES_OLLAMA_URL'];
   if (ollamaUrl) {
     return new OllamaProvider(ollamaUrl);
   }
@@ -120,7 +120,7 @@ class OllamaProvider implements LlmProvider {
   }
 
   async complete(opts: { system: string; prompt: string; maxTokens: number }): Promise<string> {
-    const model = process.env['KG_OLLAMA_MODEL'] ?? 'llama3.2';
+    const model = process.env['PINAKES_OLLAMA_MODEL'] ?? 'llama3.2';
     const url = `${this.baseUrl.replace(/\/$/, '')}/api/chat`;
     const res = await fetch(url, {
       method: 'POST',
@@ -247,7 +247,7 @@ class DisabledProvider implements LlmProvider {
 
   async complete(): Promise<string> {
     throw new Error(
-      'No LLM provider available. Set KG_OLLAMA_URL, ANTHROPIC_API_KEY, or ' +
+      'No LLM provider available. Set PINAKES_OLLAMA_URL, ANTHROPIC_API_KEY, or ' +
         'OPENAI_API_KEY, or install claude/codex CLI.'
     );
   }

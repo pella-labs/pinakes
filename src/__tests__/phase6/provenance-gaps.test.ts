@@ -21,13 +21,13 @@ import { extractConcepts, queryGaps } from '../../gaps/detector.js';
  *   2. detectConfidence: 'inferred' from frontmatter
  *   3. detectConfidence: 'ambiguous' from frontmatter
  *   4. Confidence column populated on ingest
- *   5. Filter by confidence inside kg_execute sandbox
+ *   5. Filter by confidence inside execute sandbox
  *   6. extractConcepts: bold, wikilinks, backticks
- *   7. Gap detection: ≥3 concept mentions → kg_gaps row
+ *   7. Gap detection: ≥3 concept mentions → pinakes_gaps row
  *   8. Gap resolution: dedicated node → resolved_at set
- *   9. kg.project.gaps() returns unresolved gaps via sandbox
- *  10. kg.project.gaps({ resolved: true }) includes resolved
- *  11. kg.personal.gaps() respects scope isolation
+ *   9. pinakes.project.gaps() returns unresolved gaps via sandbox
+ *  10. pinakes.project.gaps({ resolved: true }) includes resolved
+ *  11. pinakes.personal.gaps() respects scope isolation
  *  12. Gap fill via write → resolved on next ingest
  *  13. source_uri present on query results
  */
@@ -122,10 +122,10 @@ describe('Phase 6 integration', () => {
 
   beforeEach(() => {
     __resetSingleFlightForTests();
-    tmpRoot = mkdtempSync(join(tmpdir(), 'kg-phase6-'));
+    tmpRoot = mkdtempSync(join(tmpdir(), 'pinakes-phase6-'));
     wikiDir = join(tmpRoot, 'wiki');
     mkdirSync(wikiDir, { recursive: true });
-    bundle = openDb(join(tmpRoot, 'kg.db'));
+    bundle = openDb(join(tmpRoot, 'pinakes.db'));
     repository = new Repository(bundle);
   });
 
@@ -142,7 +142,7 @@ describe('Phase 6 integration', () => {
     await ingester.ingestFile(join(wikiDir, 'plain.md'));
 
     const row = bundle.writer
-      .prepare<[], { confidence: string }>('SELECT confidence FROM kg_nodes LIMIT 1')
+      .prepare<[], { confidence: string }>('SELECT confidence FROM pinakes_nodes LIMIT 1')
       .get();
     expect(row?.confidence).toBe('extracted');
   });
@@ -154,7 +154,7 @@ describe('Phase 6 integration', () => {
     await ingester.ingestFile(join(wikiDir, 'ai.md'));
 
     const row = bundle.writer
-      .prepare<[], { confidence: string }>('SELECT confidence FROM kg_nodes LIMIT 1')
+      .prepare<[], { confidence: string }>('SELECT confidence FROM pinakes_nodes LIMIT 1')
       .get();
     expect(row?.confidence).toBe('inferred');
   });
@@ -166,12 +166,12 @@ describe('Phase 6 integration', () => {
     await ingester.ingestFile(join(wikiDir, 'flagged.md'));
 
     const row = bundle.writer
-      .prepare<[], { confidence: string }>('SELECT confidence FROM kg_nodes LIMIT 1')
+      .prepare<[], { confidence: string }>('SELECT confidence FROM pinakes_nodes LIMIT 1')
       .get();
     expect(row?.confidence).toBe('ambiguous');
   });
 
-  it('filter by confidence inside kg_execute sandbox', async () => {
+  it('filter by confidence inside execute sandbox', async () => {
     // Ingest two files with different confidence levels
     writeFileSync(join(wikiDir, 'real.md'), '# Real Data\n\nExtracted content about authentication.');
     const aiMd = `---\nsource: haiku\n---\n# AI Summary\n\nInferred content about authentication.`;
@@ -182,7 +182,7 @@ describe('Phase 6 integration', () => {
     await ingester.ingestFile(join(wikiDir, 'ai.md'));
 
     const result = await executor.executeWithBindings(
-      `const results = kg.project.fts('authentication');
+      `const results = pinakes.project.fts('authentication');
        return results.filter(r => r.confidence === 'extracted');`,
       makeDeps()
     );
@@ -194,7 +194,7 @@ describe('Phase 6 integration', () => {
     }
   });
 
-  it('gap detection: ≥3 concept mentions → kg_gaps row', async () => {
+  it('gap detection: ≥3 concept mentions → pinakes_gaps row', async () => {
     // Create files that mention **bcrypt** ≥3 times across chunks
     writeFileSync(
       join(wikiDir, 'a.md'),
@@ -257,7 +257,7 @@ describe('Phase 6 integration', () => {
     expect(resolved!.resolved_at).not.toBeNull();
   });
 
-  it('kg.project.gaps() returns unresolved gaps via sandbox', async () => {
+  it('pinakes.project.gaps() returns unresolved gaps via sandbox', async () => {
     // Set up ≥3 mentions of a concept
     writeFileSync(join(wikiDir, 'x.md'), '# X\n\nUse **redis** for caching.');
     writeFileSync(join(wikiDir, 'y.md'), '# Y\n\nThe **redis** server runs locally.');
@@ -269,7 +269,7 @@ describe('Phase 6 integration', () => {
     await ingester.ingestFile(join(wikiDir, 'z.md'));
 
     const result = await executor.executeWithBindings(
-      'return kg.project.gaps()',
+      'return pinakes.project.gaps()',
       makeDeps()
     );
     expect(result.error).toBeUndefined();
@@ -279,7 +279,7 @@ describe('Phase 6 integration', () => {
     expect(redisGap!.resolved_at).toBeNull();
   });
 
-  it('kg.project.gaps({ resolved: true }) includes historical resolutions', async () => {
+  it('pinakes.project.gaps({ resolved: true }) includes historical resolutions', async () => {
     writeFileSync(join(wikiDir, 'a.md'), '# A\n\nUse **jwt** tokens.');
     writeFileSync(join(wikiDir, 'b.md'), '# B\n\nA **jwt** is signed.');
     writeFileSync(join(wikiDir, 'c.md'), '# C\n\nVerify **jwt** on each request.');
@@ -295,7 +295,7 @@ describe('Phase 6 integration', () => {
 
     // Default gaps() should not include resolved
     const r1 = await executor.executeWithBindings(
-      'return kg.project.gaps()',
+      'return pinakes.project.gaps()',
       makeDeps()
     );
     const unresolvedArr = r1.result as Array<{ topic: string }>;
@@ -303,7 +303,7 @@ describe('Phase 6 integration', () => {
 
     // With { resolved: true } should include it
     const r2 = await executor.executeWithBindings(
-      'return kg.project.gaps({ resolved: true })',
+      'return pinakes.project.gaps({ resolved: true })',
       makeDeps()
     );
     const allArr = r2.result as Array<{ topic: string; resolved_at: number | null }>;
@@ -312,7 +312,7 @@ describe('Phase 6 integration', () => {
     expect(jwtGap!.resolved_at).not.toBeNull();
   });
 
-  it('kg.personal.gaps() respects scope isolation', async () => {
+  it('pinakes.personal.gaps() respects scope isolation', async () => {
     // Set up project gaps
     writeFileSync(join(wikiDir, 'a.md'), '# A\n\nUse **graphql** queries.');
     writeFileSync(join(wikiDir, 'b.md'), '# B\n\nA **graphql** schema.');
@@ -327,7 +327,7 @@ describe('Phase 6 integration', () => {
     const personalTmp = join(tmpRoot, 'personal');
     const personalWiki = join(personalTmp, 'wiki');
     mkdirSync(personalWiki, { recursive: true });
-    const personalBundle = openDb(join(personalTmp, 'kg.db'));
+    const personalBundle = openDb(join(personalTmp, 'pinakes.db'));
 
     try {
       const personalRepo = new Repository(personalBundle);
@@ -337,7 +337,7 @@ describe('Phase 6 integration', () => {
 
       // personal.gaps() should return empty (no personal ingest)
       const r = await executor.executeWithBindings(
-        'return kg.personal.gaps()',
+        'return pinakes.personal.gaps()',
         deps
       );
       expect(r.error).toBeUndefined();
@@ -345,7 +345,7 @@ describe('Phase 6 integration', () => {
 
       // project.gaps() should still return the graphql gap
       const r2 = await executor.executeWithBindings(
-        'return kg.project.gaps()',
+        'return pinakes.project.gaps()',
         deps
       );
       const arr = r2.result as Array<{ topic: string }>;
@@ -372,7 +372,7 @@ describe('Phase 6 integration', () => {
 
     // Fill the gap via sandbox write (simulating what the LLM would do)
     const writeResult = await executor.executeWithBindings(
-      `kg.project.write('webpack.md', '# webpack\\n\\nA JavaScript module bundler.');
+      `pinakes.project.write('webpack.md', '# webpack\\n\\nA JavaScript module bundler.');
        return 'written';`,
       makeDeps({
         project: {
@@ -400,7 +400,7 @@ describe('Phase 6 integration', () => {
     await ingester.ingestFile(join(wikiDir, 'info.md'));
 
     const result = await executor.executeWithBindings(
-      `return kg.project.fts('searchable')`,
+      `return pinakes.project.fts('searchable')`,
       makeDeps()
     );
     expect(result.error).toBeUndefined();
@@ -420,11 +420,11 @@ describe('Phase 6 integration', () => {
 
     // Get a node id
     const nodeRow = bundle.writer
-      .prepare<[], { id: string }>('SELECT id FROM kg_nodes LIMIT 1')
+      .prepare<[], { id: string }>('SELECT id FROM pinakes_nodes LIMIT 1')
       .get();
 
     const result = await executor.executeWithBindings(
-      `return kg.project.get('${nodeRow!.id}')`,
+      `return pinakes.project.get('${nodeRow!.id}')`,
       makeDeps()
     );
     expect(result.error).toBeUndefined();

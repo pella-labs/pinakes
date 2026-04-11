@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { closeDb, openDb, __test, type DbBundle } from '../../db/client.js';
-import { KG_TABLES, KG_VIRTUAL_TABLES } from '../../db/schema.js';
+import { PINAKES_TABLES, PINAKES_VIRTUAL_TABLES } from '../../db/schema.js';
 
 /**
  * Schema/DB tests — Phase 2 first wave.
@@ -25,7 +25,7 @@ describe('db/schema (Phase 2)', () => {
   let bundle: DbBundle | null = null;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), 'kg-schema-'));
+    tmp = mkdtempSync(join(tmpdir(), 'pinakes-schema-'));
   });
 
   afterEach(() => {
@@ -37,24 +37,24 @@ describe('db/schema (Phase 2)', () => {
   });
 
   it('migration up creates all 9 expected tables (7 regular + 2 virtual)', () => {
-    bundle = openDb(join(tmp, 'kg.db'));
+    bundle = openDb(join(tmp, 'pinakes.db'));
     const rows = bundle.writer
       .prepare("SELECT name FROM sqlite_master WHERE type IN ('table') ORDER BY name")
       .all() as Array<{ name: string }>;
     const names = rows.map((r) => r.name);
 
     // Every expected regular table must be present.
-    for (const expected of KG_TABLES) {
+    for (const expected of PINAKES_TABLES) {
       expect(names).toContain(expected);
     }
     // Every expected virtual table must be present (FTS5 + sqlite-vec).
-    for (const expected of KG_VIRTUAL_TABLES) {
+    for (const expected of PINAKES_VIRTUAL_TABLES) {
       expect(names).toContain(expected);
     }
   });
 
   it('applies all 6 mandatory pragmas on every connection (writer + readers)', () => {
-    bundle = openDb(join(tmp, 'kg.db'));
+    bundle = openDb(join(tmp, 'pinakes.db'));
     const expected: Array<[string, unknown]> = [
       // journal_mode pragma returns the mode as a string row
       ['journal_mode', 'wal'],
@@ -77,7 +77,7 @@ describe('db/schema (Phase 2)', () => {
   });
 
   it('SQLite version is in the allowed set (3.50.4 or >=3.51.3, never 3.51.0)', () => {
-    bundle = openDb(join(tmp, 'kg.db'));
+    bundle = openDb(join(tmp, 'pinakes.db'));
     const row = bundle.writer.prepare('SELECT sqlite_version() AS v').get() as { v: string };
 
     expect(__test.isAllowedSqliteVersion(row.v)).toBe(true);
@@ -95,10 +95,10 @@ describe('db/schema (Phase 2)', () => {
   });
 
   it('idempotent upsert: writing the same node twice → 1 row', () => {
-    bundle = openDb(join(tmp, 'kg.db'));
+    bundle = openDb(join(tmp, 'pinakes.db'));
     const now = Date.now();
     const insert = bundle.writer.prepare(
-      `INSERT INTO kg_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at)
+      `INSERT INTO pinakes_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          content = excluded.content,
@@ -141,7 +141,7 @@ describe('db/schema (Phase 2)', () => {
     );
 
     const rows = bundle.writer
-      .prepare('SELECT id, content, source_sha FROM kg_nodes WHERE id = ?')
+      .prepare('SELECT id, content, source_sha FROM pinakes_nodes WHERE id = ?')
       .all('deadbeef') as Array<{ id: string; content: string; source_sha: string }>;
 
     expect(rows.length).toBe(1);
@@ -150,43 +150,43 @@ describe('db/schema (Phase 2)', () => {
   });
 
   it('FK cascade: deleting a node deletes its chunks + edges', () => {
-    bundle = openDb(join(tmp, 'kg.db'));
+    bundle = openDb(join(tmp, 'pinakes.db'));
     const now = Date.now();
     const w = bundle.writer;
 
     // Insert two nodes + two chunks (one per node) + one edge.
     const insertNode = w.prepare(
-      `INSERT INTO kg_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at)
+      `INSERT INTO pinakes_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at)
        VALUES (?, 'project', 'file:///x.md', '', 'section', NULL, ?, 'sha', 1, ?, ?, ?)`
     );
     insertNode.run('node-A', 'A content', now, now, now);
     insertNode.run('node-B', 'B content', now, now, now);
 
     const insertChunk = w.prepare(
-      `INSERT INTO kg_chunks (id, node_id, chunk_index, text, chunk_sha, token_count, created_at)
+      `INSERT INTO pinakes_chunks (id, node_id, chunk_index, text, chunk_sha, token_count, created_at)
        VALUES (?, ?, 0, ?, ?, 1, ?)`
     );
     insertChunk.run('chunk-A', 'node-A', 'A chunk', 'sha-A', now);
     insertChunk.run('chunk-B', 'node-B', 'B chunk', 'sha-B', now);
 
     w.prepare(
-      `INSERT INTO kg_edges (src_id, dst_id, edge_kind) VALUES (?, ?, 'wikilink')`
+      `INSERT INTO pinakes_edges (src_id, dst_id, edge_kind) VALUES (?, ?, 'wikilink')`
     ).run('node-A', 'node-B');
 
     // Sanity: everything is there.
-    expect((w.prepare('SELECT count(*) AS c FROM kg_nodes').get() as { c: number }).c).toBe(2);
-    expect((w.prepare('SELECT count(*) AS c FROM kg_chunks').get() as { c: number }).c).toBe(2);
-    expect((w.prepare('SELECT count(*) AS c FROM kg_edges').get() as { c: number }).c).toBe(1);
+    expect((w.prepare('SELECT count(*) AS c FROM pinakes_nodes').get() as { c: number }).c).toBe(2);
+    expect((w.prepare('SELECT count(*) AS c FROM pinakes_chunks').get() as { c: number }).c).toBe(2);
+    expect((w.prepare('SELECT count(*) AS c FROM pinakes_edges').get() as { c: number }).c).toBe(1);
 
     // Delete node-A — should cascade to chunk-A and the edge from A to B.
-    w.prepare('DELETE FROM kg_nodes WHERE id = ?').run('node-A');
+    w.prepare('DELETE FROM pinakes_nodes WHERE id = ?').run('node-A');
 
-    expect((w.prepare('SELECT count(*) AS c FROM kg_nodes').get() as { c: number }).c).toBe(1);
-    expect((w.prepare('SELECT count(*) AS c FROM kg_chunks').get() as { c: number }).c).toBe(1);
-    expect((w.prepare('SELECT count(*) AS c FROM kg_edges').get() as { c: number }).c).toBe(0);
+    expect((w.prepare('SELECT count(*) AS c FROM pinakes_nodes').get() as { c: number }).c).toBe(1);
+    expect((w.prepare('SELECT count(*) AS c FROM pinakes_chunks').get() as { c: number }).c).toBe(1);
+    expect((w.prepare('SELECT count(*) AS c FROM pinakes_edges').get() as { c: number }).c).toBe(0);
 
     // The remaining chunk belongs to node-B.
-    const survivor = w.prepare('SELECT node_id FROM kg_chunks').get() as { node_id: string };
+    const survivor = w.prepare('SELECT node_id FROM pinakes_chunks').get() as { node_id: string };
     expect(survivor.node_id).toBe('node-B');
   });
 });

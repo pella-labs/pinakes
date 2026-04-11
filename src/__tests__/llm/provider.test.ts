@@ -10,7 +10,7 @@ describe('llm/provider (D36)', () => {
 
   beforeEach(() => {
     // Clear relevant env vars to isolate tests
-    delete process.env['KG_OLLAMA_URL'];
+    delete process.env['PINAKES_OLLAMA_URL'];
     delete process.env['ANTHROPIC_API_KEY'];
     delete process.env['OPENAI_API_KEY'];
   });
@@ -32,8 +32,8 @@ describe('llm/provider (D36)', () => {
     expect(provider.available()).toBe(true);
   });
 
-  it('falls back to Ollama when KG_OLLAMA_URL is set', () => {
-    process.env['KG_OLLAMA_URL'] = 'http://localhost:11434';
+  it('falls back to Ollama when PINAKES_OLLAMA_URL is set', () => {
+    process.env['PINAKES_OLLAMA_URL'] = 'http://localhost:11434';
 
     const provider = createLlmProvider();
     expect(provider.name).toBe('ollama');
@@ -97,7 +97,7 @@ describe('llm/provider (D36)', () => {
   });
 
   it('respects priority: MCP > Ollama > API key', () => {
-    process.env['KG_OLLAMA_URL'] = 'http://localhost:11434';
+    process.env['PINAKES_OLLAMA_URL'] = 'http://localhost:11434';
     process.env['ANTHROPIC_API_KEY'] = 'test-key';
 
     // With MCP server that has sampling → MCP wins
@@ -111,7 +111,7 @@ describe('llm/provider (D36)', () => {
     expect(createLlmProvider().name).toBe('ollama');
 
     // Remove Ollama → API key wins
-    delete process.env['KG_OLLAMA_URL'];
+    delete process.env['PINAKES_OLLAMA_URL'];
     expect(createLlmProvider().name).toBe('anthropic-api');
   });
 });

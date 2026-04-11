@@ -26,12 +26,12 @@ import { detectGaps } from '../gaps/detector.js';
 import { chunkSection, type Chunk as ChunkText } from './parse/chunk.js';
 
 /**
- * IngesterService — the load-bearing single-flight writer for KG-MCP Phase 2.
+ * IngesterService — the load-bearing single-flight writer for Pinakes Phase 2.
  *
  * **What it does**: given an absolute path to a markdown file, parse it into
  * sections, chunk each section, embed only the chunks whose sha changed, and
  * upsert the result into SQLite under one transaction. Update the consistency
- * manifest, append a row to `kg_log`. Errors trigger a clean rollback and an
+ * manifest, append a row to `pinakes_log`. Errors trigger a clean rollback and an
  * error log entry, but never throw past the caller's await — they're caught,
  * logged, and re-thrown so the rebuild CLI can decide whether to abort or
  * continue.
@@ -44,7 +44,7 @@ import { chunkSection, type Chunk as ChunkText } from './parse/chunk.js';
  *   single-flight pattern; CLAUDE.md §Architecture #3 / §Database Rules #5.
  *
  * - **Per-chunk skip-unchanged**: on a re-ingest of an existing file, we
- *   load the existing `kg_chunks` rows for that file's nodes, build a
+ *   load the existing `pinakes_chunks` rows for that file's nodes, build a
  *   `Set<chunk_sha>` of already-embedded chunks, and only call `embedder.embed()`
  *   for chunks whose sha is NOT in the set. This is THE optimization that
  *   makes Pharos's whole-file-rewrite-per-turn pattern viable — without it,
@@ -175,7 +175,7 @@ export class IngesterService {
     const sourceUri = toStoredUri(abs, this.wikiRoot, this.scope);
 
     this.bundle.writer
-      .prepare('DELETE FROM kg_nodes WHERE scope = ? AND source_uri = ?')
+      .prepare('DELETE FROM pinakes_nodes WHERE scope = ? AND source_uri = ?')
       .run(this.scope, sourceUri);
 
     this.manifest = removeManifestEntry(this.manifest, abs, this.wikiRoot, this.scope);
@@ -278,56 +278,56 @@ export class IngesterService {
     const totalChunks = planned.reduce((acc, n) => acc + n.chunks.length, 0);
 
     this.runInTransaction((w) => {
-      // Delete old vec rows BEFORE deleting kg_chunks rows. We need to know
-      // the rowids first because the FK cascade will drop the kg_chunks rows
+      // Delete old vec rows BEFORE deleting pinakes_chunks rows. We need to know
+      // the rowids first because the FK cascade will drop the pinakes_chunks rows
       // (and sqlite-vec doesn't have FK awareness).
       const oldRowids = w
         .prepare<[string, string], { rowid: number }>(
           `SELECT c.rowid AS rowid
-             FROM kg_chunks c JOIN kg_nodes n ON c.node_id = n.id
+             FROM pinakes_chunks c JOIN pinakes_nodes n ON c.node_id = n.id
             WHERE n.scope = ? AND n.source_uri = ?`
         )
         .all(this.scope, sourceUri);
 
       if (oldRowids.length > 0) {
         const placeholders = oldRowids.map(() => '?').join(',');
-        w.prepare(`DELETE FROM kg_chunks_vec WHERE rowid IN (${placeholders})`).run(
+        w.prepare(`DELETE FROM pinakes_chunks_vec WHERE rowid IN (${placeholders})`).run(
           ...oldRowids.map((r) => r.rowid)
         );
       }
 
       // Delete old nodes for this file (cascades to chunks → FTS5 trigger fires).
       // Also delete outbound edges from this file's nodes (edges don't cascade
-      // from kg_nodes FK — they reference src_id/dst_id without ON DELETE CASCADE
+      // from pinakes_nodes FK — they reference src_id/dst_id without ON DELETE CASCADE
       // on dst_id, so we delete src edges explicitly).
       const oldNodeIds = w
         .prepare<[string, string], { id: string }>(
-          `SELECT id FROM kg_nodes WHERE scope = ? AND source_uri = ?`
+          `SELECT id FROM pinakes_nodes WHERE scope = ? AND source_uri = ?`
         )
         .all(this.scope, sourceUri)
         .map((r) => r.id);
 
       if (oldNodeIds.length > 0) {
         const ph = oldNodeIds.map(() => '?').join(',');
-        w.prepare(`DELETE FROM kg_edges WHERE src_id IN (${ph})`).run(...oldNodeIds);
+        w.prepare(`DELETE FROM pinakes_edges WHERE src_id IN (${ph})`).run(...oldNodeIds);
       }
 
-      w.prepare('DELETE FROM kg_nodes WHERE scope = ? AND source_uri = ?').run(
+      w.prepare('DELETE FROM pinakes_nodes WHERE scope = ? AND source_uri = ?').run(
         this.scope,
         sourceUri
       );
 
       // Insert new nodes
       const insertNode = w.prepare(
-        `INSERT INTO kg_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at, confidence)
+        `INSERT INTO pinakes_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at, confidence)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       const insertChunk = w.prepare(
-        `INSERT INTO kg_chunks (id, node_id, chunk_index, text, chunk_sha, token_count, created_at)
+        `INSERT INTO pinakes_chunks (id, node_id, chunk_index, text, chunk_sha, token_count, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
       );
       const insertVec = w.prepare(
-        'INSERT INTO kg_chunks_vec(rowid, embedding) VALUES (?, ?)'
+        'INSERT INTO pinakes_chunks_vec(rowid, embedding) VALUES (?, ?)'
       );
 
       for (const node of planned) {
@@ -382,7 +382,7 @@ export class IngesterService {
       // existing node IDs, and insert edges. Unresolved links are silently
       // skipped (gap detector already surfaces those).
       const insertEdge = w.prepare(
-        `INSERT OR IGNORE INTO kg_edges (src_id, dst_id, edge_kind) VALUES (?, ?, 'wikilink')`
+        `INSERT OR IGNORE INTO pinakes_edges (src_id, dst_id, edge_kind) VALUES (?, ?, 'wikilink')`
       );
 
       for (const node of planned) {
@@ -396,7 +396,7 @@ export class IngesterService {
       }
     });
 
-    // Step 7: append kg_log row
+    // Step 7: append pinakes_log row
     this.appendLog('ingest:done', absPath, {
       nodes: planned.length,
       chunks_added: totalChunks - chunksSkipped,
@@ -446,9 +446,9 @@ export class IngesterService {
         { chunk_sha: string; embedding: Buffer | null }
       >(
         `SELECT c.chunk_sha AS chunk_sha, vec.embedding AS embedding
-           FROM kg_chunks c
-           JOIN kg_nodes n ON c.node_id = n.id
-           LEFT JOIN kg_chunks_vec vec ON vec.rowid = c.rowid
+           FROM pinakes_chunks c
+           JOIN pinakes_nodes n ON c.node_id = n.id
+           LEFT JOIN pinakes_chunks_vec vec ON vec.rowid = c.rowid
           WHERE n.scope = ? AND n.source_uri = ?`
       )
       .all(this.scope, sourceUri);
@@ -475,12 +475,12 @@ export class IngesterService {
     try {
       this.bundle.writer
         .prepare(
-          `INSERT INTO kg_log (ts, scope, kind, source_uri, payload)
+          `INSERT INTO pinakes_log (ts, scope, kind, source_uri, payload)
            VALUES (?, ?, ?, ?, ?)`
         )
         .run(Date.now(), this.scope, kind, toStoredUri(absPath, this.wikiRoot, this.scope), JSON.stringify(payload));
     } catch (err) {
-      logger.warn({ err, kind, absPath }, 'failed to append kg_log row');
+      logger.warn({ err, kind, absPath }, 'failed to append pinakes_log row');
     }
   }
 }
@@ -522,7 +522,7 @@ function sha1(input: string): string {
 // ----------------------------------------------------------------------------
 
 /**
- * Reset the in-memory manifest to empty. Used by `kg rebuild` when the
+ * Reset the in-memory manifest to empty. Used by `pinakes rebuild` when the
  * caller passes `--clean` to force a full re-ingest from scratch.
  */
 export function freshManifest(): Manifest {
@@ -566,7 +566,7 @@ function resolveWikilinkTarget(
   const withMd = target.endsWith('.md') ? target : `${target}.md`;
   const row = w
     .prepare<[string, string, string, string], { id: string }>(
-      `SELECT id FROM kg_nodes
+      `SELECT id FROM pinakes_nodes
        WHERE scope = ? AND (
          source_uri = ? OR
          source_uri LIKE ? OR

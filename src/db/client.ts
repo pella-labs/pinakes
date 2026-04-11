@@ -11,7 +11,7 @@ import { logger } from '../observability/logger.js';
 import * as schema from './schema.js';
 
 /**
- * SQLite connection management for KG-MCP.
+ * SQLite connection management for Pinakes.
  *
  * **Single-writer + read-pool-of-2** invariant (CLAUDE.md §Architecture #3,
  * §Database Rules #1):
@@ -31,7 +31,7 @@ import * as schema from './schema.js';
  *
  * **sqlite-vec extension** is loaded on every connection so that the vec0
  * virtual table is queryable from any reader and writable by the writer.
- * The migration that creates `kg_chunks_vec` requires the extension to be
+ * The migration that creates `pinakes_chunks_vec` requires the extension to be
  * loaded BEFORE drizzle's `migrate()` runs — this file orders things so
  * that load happens first.
  *
@@ -117,7 +117,7 @@ function applyPragmas(db: BetterSqliteDatabase): void {
 
 /**
  * Load the sqlite-vec extension on a connection. Must be called BEFORE any
- * query that touches `kg_chunks_vec`, including the migration that creates
+ * query that touches `pinakes_chunks_vec`, including the migration that creates
  * the virtual table.
  *
  * better-sqlite3 disables loadExtension() by default; we re-enable it on
@@ -154,7 +154,7 @@ const MIGRATIONS_FOLDER = (() => {
  *   4. Load sqlite-vec on each connection
  *   5. Verify SQLite version (3.50.4 or ≥3.51.3, never 3.51.0)
  *   6. Run drizzle migrations on the writer
- *   7. Stamp `kg_meta.schema_version='1'` if not yet set
+ *   7. Stamp `pinakes_meta.schema_version='1'` if not yet set
  *
  * Returns a `DbBundle` ready for repository / ingester use.
  *
@@ -191,7 +191,7 @@ export function openDb(path: string, options: OpenDbOptions = {}): DbBundle {
     // Clean up before throwing so we don't leak file handles.
     closeDb({ path: absPath, writer, readers, drizzleWriter: drizzle(writer, { schema }) });
     throw new Error(
-      `SQLite version ${versionRow.v} is not allowed for KG-MCP — requires 3.50.4 or >=3.51.3 (presearch D18). ` +
+      `SQLite version ${versionRow.v} is not allowed for Pinakes — requires 3.50.4 or >=3.51.3 (presearch D18). ` +
         `better-sqlite3@12.8.0 bundles 3.51.3; if you see this, your better-sqlite3 was compiled against the system sqlite.`
     );
   }
@@ -208,7 +208,7 @@ export function openDb(path: string, options: OpenDbOptions = {}): DbBundle {
   // Step 7: stamp schema_version=1 if absent. Subsequent phases bump this.
   if (runMigrations) {
     writer
-      .prepare('INSERT OR IGNORE INTO kg_meta (key, value) VALUES (?, ?)')
+      .prepare('INSERT OR IGNORE INTO pinakes_meta (key, value) VALUES (?, ?)')
       .run('schema_version', '2');
   }
 

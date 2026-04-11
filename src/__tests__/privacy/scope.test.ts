@@ -9,8 +9,8 @@ import { Repository } from '../../db/repository.js';
 import { IngesterService, __resetSingleFlightForTests } from '../../ingest/ingester.js';
 import { CountingEmbedder, getDefaultEmbedder } from '../../retrieval/embedder.js';
 import { QuickJSExecutor } from '../../sandbox/executor.js';
-import { makeKgExecuteHandler } from '../../mcp/tools/execute.js';
-import { makeKgSearchHandler } from '../../mcp/tools/search.js';
+import { makeExecuteHandler } from '../../mcp/tools/execute.js';
+import { makeSearchHandler } from '../../mcp/tools/search.js';
 import { writeAuditRow } from '../../observability/audit.js';
 
 /**
@@ -31,7 +31,7 @@ let projectWiki: string;
 let personalWiki: string;
 
 function makeExecHandler() {
-  return makeKgExecuteHandler({
+  return makeExecuteHandler({
     repository, executor,
     bundle: projectBundle, embedder,
     wikiRoot: projectWiki,
@@ -40,8 +40,8 @@ function makeExecHandler() {
   });
 }
 
-function makeSearchHandler() {
-  return makeKgSearchHandler({
+function makeSearchHandlerForTest() {
+  return makeSearchHandler({
     repository, embedder,
     bundle: projectBundle,
     personalBundle,
@@ -55,7 +55,7 @@ function parseEnvelope(response: { content: [{ type: 'text'; text: string }] }) 
 beforeAll(async () => {
   __resetSingleFlightForTests();
 
-  tmpRoot = mkdtempSync(join(tmpdir(), 'kg-scope-'));
+  tmpRoot = mkdtempSync(join(tmpdir(), 'pinakes-scope-'));
 
   projectWiki = join(tmpRoot, 'project-wiki');
   mkdirSync(projectWiki, { recursive: true });
@@ -102,9 +102,9 @@ afterAll(() => {
 // ============================================================================
 
 describe('scope behavior (non-adversarial)', () => {
-  it('1. kg.describe() returns project + personal counts for scope=both', async () => {
+  it('1. pinakes.describe() returns project + personal counts for scope=both', async () => {
     const handler = makeExecHandler();
-    const res = await handler({ code: `return kg.describe()`, scope: 'both' });
+    const res = await handler({ code: `return pinakes.describe()`, scope: 'both' });
     const env = parseEnvelope(res);
     expect(env.result).toHaveProperty('project');
     expect(env.result).toHaveProperty('personal');
@@ -112,48 +112,48 @@ describe('scope behavior (non-adversarial)', () => {
     expect(env.result.personal.chunks).toBeGreaterThan(0);
   });
 
-  it('2. kg.describe() hides personal key for scope=project', async () => {
+  it('2. pinakes.describe() hides personal key for scope=project', async () => {
     const handler = makeExecHandler();
-    const res = await handler({ code: `return kg.describe()`, scope: 'project' });
+    const res = await handler({ code: `return pinakes.describe()`, scope: 'project' });
     const env = parseEnvelope(res);
     expect(env.result).toHaveProperty('project');
     expect(env.result).not.toHaveProperty('personal');
   });
 
   it('3. personal DB absent → project queries work fine', async () => {
-    const handler = makeKgExecuteHandler({
+    const handler = makeExecuteHandler({
       repository: new Repository(projectBundle),
       executor, bundle: projectBundle, embedder, wikiRoot: projectWiki,
     });
-    const res = await handler({ code: `return kg.project.fts('bcrypt').length`, scope: 'project' });
+    const res = await handler({ code: `return pinakes.project.fts('bcrypt').length`, scope: 'project' });
     const env = parseEnvelope(res);
     expect(env.result).toBeGreaterThan(0);
   });
 
-  it('4. scope=project → kg.personal.write("x", "leak") throws', async () => {
+  it('4. scope=project → pinakes.personal.write("x", "leak") throws', async () => {
     const handler = makeExecHandler();
     const res = await handler({
-      code: `try { kg.personal.write('x', 'leak'); return 'LEAKED'; } catch(e) { return 'blocked: ' + String(e); }`,
+      code: `try { pinakes.personal.write('x', 'leak'); return 'LEAKED'; } catch(e) { return 'blocked: ' + String(e); }`,
       scope: 'project',
     });
     const env = parseEnvelope(res);
     expect(env.result).not.toContain('LEAKED');
   });
 
-  it('5. kg.personal.fts() works in scope=personal', async () => {
+  it('5. pinakes.personal.fts() works in scope=personal', async () => {
     const handler = makeExecHandler();
     const res = await handler({
-      code: `return kg.personal.fts('secret').length`,
+      code: `return pinakes.personal.fts('secret').length`,
       scope: 'personal',
     });
     const env = parseEnvelope(res);
     expect(env.result).toBeGreaterThan(0);
   });
 
-  it('6. kg.personal.write() works in scope=personal', async () => {
+  it('6. pinakes.personal.write() works in scope=personal', async () => {
     const handler = makeExecHandler();
     const res = await handler({
-      code: `return kg.personal.write('test-write.md', '# Test\\n\\nWritten from personal scope.')`,
+      code: `return pinakes.personal.write('test-write.md', '# Test\\n\\nWritten from personal scope.')`,
       scope: 'personal',
     });
     const env = parseEnvelope(res);
@@ -167,8 +167,8 @@ describe('scope behavior (non-adversarial)', () => {
     rmSync(join(personalWiki, 'test-write.md'), { force: true });
   });
 
-  it('7. source_scope on every result from scope=both in kg_search', async () => {
-    const handler = makeSearchHandler();
+  it('7. source_scope on every result from scope=both in search', async () => {
+    const handler = makeSearchHandlerForTest();
     const res = await handler({ query: 'password', scope: 'both' });
     const env = parseEnvelope(res);
     // Should have results from both scopes
@@ -187,14 +187,14 @@ describe('scope behavior (non-adversarial)', () => {
 
     // Write a project audit row
     writeAuditRow(projectBundle.writer, projectJsonl, {
-      toolName: 'kg_execute',
+      toolName: 'execute',
       scopeRequested: 'project',
       responseTokens: 100,
     });
 
     // Write a personal audit row
     writeAuditRow(personalBundle.writer, personalJsonl, {
-      toolName: 'kg_execute',
+      toolName: 'execute',
       scopeRequested: 'personal',
       responseTokens: 50,
     });
@@ -213,8 +213,8 @@ describe('scope behavior (non-adversarial)', () => {
     const handler = makeExecHandler();
     const res = await handler({
       code: `
-        var pCount = kg.project.fts('auth').length;
-        var nCount = kg.personal.fts('secret').length;
+        var pCount = pinakes.project.fts('auth').length;
+        var nCount = pinakes.personal.fts('secret').length;
         return { project: pCount, personal: nCount };
       `,
       scope: 'both',
@@ -225,7 +225,7 @@ describe('scope behavior (non-adversarial)', () => {
   });
 
   it('10. personal scope requested without personal DB → error', async () => {
-    const noPersonalHandler = makeKgExecuteHandler({
+    const noPersonalHandler = makeExecuteHandler({
       repository: new Repository(projectBundle),
       executor, bundle: projectBundle, embedder, wikiRoot: projectWiki,
     });

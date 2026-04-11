@@ -74,7 +74,7 @@ export class Repository {
     const rows = reader
       .prepare<[string, string], { id: string; text: string; source_uri: string; chunk_index: number }>(
         `SELECT c.id AS id, c.text AS text, n.source_uri AS source_uri, c.chunk_index AS chunk_index
-           FROM kg_chunks c JOIN kg_nodes n ON c.node_id = n.id
+           FROM pinakes_chunks c JOIN pinakes_nodes n ON c.node_id = n.id
           WHERE n.scope = ?
             AND lower(c.text) LIKE '%' || lower(?) || '%'
           ORDER BY n.source_uri, c.chunk_index`
@@ -113,7 +113,7 @@ export class Repository {
     const row = reader
       .prepare<[string, string], { id: string; text: string; source_uri: string; chunk_index: number }>(
         `SELECT c.id AS id, c.text AS text, n.source_uri AS source_uri, c.chunk_index AS chunk_index
-           FROM kg_chunks c JOIN kg_nodes n ON c.node_id = n.id
+           FROM pinakes_chunks c JOIN pinakes_nodes n ON c.node_id = n.id
           WHERE n.scope = ? AND c.id = ?
           LIMIT 1`
       )
@@ -170,7 +170,7 @@ export class Repository {
     const row = reader
       .prepare<[string], { c: number }>(
         `SELECT count(*) AS c
-           FROM kg_chunks ch JOIN kg_nodes n ON ch.node_id = n.id
+           FROM pinakes_chunks ch JOIN pinakes_nodes n ON ch.node_id = n.id
           WHERE n.scope = ?`
       )
       .get(scope);
@@ -187,8 +187,8 @@ export class Repository {
     const placeholders = chunkIds.map(() => '?').join(',');
     writer
       .prepare(
-        `UPDATE kg_nodes SET last_accessed_at = ?
-          WHERE id IN (SELECT node_id FROM kg_chunks WHERE id IN (${placeholders}))`
+        `UPDATE pinakes_nodes SET last_accessed_at = ?
+          WHERE id IN (SELECT node_id FROM pinakes_chunks WHERE id IN (${placeholders}))`
       )
       .run(Date.now(), ...chunkIds);
   }

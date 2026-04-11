@@ -15,7 +15,7 @@ import { errorMessage, marshalJsValue } from '../helpers.js';
 /**
  * Dependencies for installing one scope's bindings in the sandbox.
  */
-export interface KgBindingDeps {
+export interface PinakesBindingDeps {
   repository: Repository;
   bundle: DbBundle;
   scope: 'project' | 'personal';
@@ -26,42 +26,42 @@ export interface KgBindingDeps {
 }
 
 /**
- * Install the `kg` global with `kg.project.*` and/or `kg.personal.*`
- * bindings plus backward-compat `kg.search()` / `kg.get()` aliases
- * and `kg.describe()`.
+ * Install the `pinakes` global with `pinakes.project.*` and/or `pinakes.personal.*`
+ * bindings plus backward-compat `pinakes.search()` / `pinakes.get()` aliases
+ * and `pinakes.describe()`.
  *
- * **Privacy invariant**: if `personalDeps` is undefined, `kg.personal`
+ * **Privacy invariant**: if `personalDeps` is undefined, `pinakes.personal`
  * does NOT exist in the sandbox — not undefined, not null, simply absent.
  * This is enforced at the dispatcher level (tool handler decides which
  * deps to pass). The 15-test adversarial suite verifies this.
  */
-export function installKgBindings(
+export function installPinakesBindings(
   context: QuickJSContext,
-  projectDeps?: KgBindingDeps,
-  personalDeps?: KgBindingDeps
+  projectDeps?: PinakesBindingDeps,
+  personalDeps?: PinakesBindingDeps
 ): void {
   Scope.withScope((s) => {
-    const kgObj = s.manage(context.newObject());
+    const pinakesObj = s.manage(context.newObject());
 
     // Install project namespace if deps provided
     if (projectDeps) {
       const projectObj = s.manage(context.newObject());
       installScopeBindings(context, s, projectObj, projectDeps);
-      context.setProp(kgObj, 'project', projectObj);
+      context.setProp(pinakesObj, 'project', projectObj);
 
       // Backward-compat aliases route to project scope
-      installBackwardCompat(context, kgObj, projectDeps);
+      installBackwardCompat(context, pinakesObj, projectDeps);
     }
 
     // Install personal namespace if deps provided (privacy invariant)
     if (personalDeps) {
       const personalObj = s.manage(context.newObject());
       installScopeBindings(context, s, personalObj, personalDeps);
-      context.setProp(kgObj, 'personal', personalObj);
+      context.setProp(pinakesObj, 'personal', personalObj);
     }
 
-    // kg.describe() — returns metadata for available scopes only
-    attachFn(context, kgObj, 'describe', () => {
+    // pinakes.describe() — returns metadata for available scopes only
+    attachFn(context, pinakesObj, 'describe', () => {
       const result: Record<string, unknown> = {};
       if (projectDeps) {
         result.project = describeScope(projectDeps);
@@ -72,7 +72,7 @@ export function installKgBindings(
       return result;
     });
 
-    context.setProp(context.global, 'kg', kgObj);
+    context.setProp(context.global, 'pinakes', pinakesObj);
   });
 }
 
@@ -84,7 +84,7 @@ function installScopeBindings(
   context: QuickJSContext,
   s: InstanceType<typeof Scope>,
   scopeObj: QuickJSHandle,
-  deps: KgBindingDeps
+  deps: PinakesBindingDeps
 ): void {
   const { bundle, scope } = deps;
   const reader = nextReader(bundle);
@@ -158,7 +158,7 @@ function installScopeBindings(
     return logRecent(reader, scope, n, opts.kind);
   });
 
-  // -- gaps(opts?) — Phase 6: query kg_gaps for concept gaps ---------------
+  // -- gaps(opts?) — Phase 6: query pinakes_gaps for concept gaps ---------------
   attachFn(context, scopeObj, 'gaps', (args) => {
     const opts = (args[0] ?? {}) as { resolved?: boolean };
     return queryGaps(reader, scope, opts);
@@ -212,17 +212,17 @@ function installScopeBindings(
 }
 
 /**
- * Install backward-compat `kg.search()` and `kg.get()` aliases.
+ * Install backward-compat `pinakes.search()` and `pinakes.get()` aliases.
  * Always routes to the project scope.
  */
 function installBackwardCompat(
   context: QuickJSContext,
-  kgObj: QuickJSHandle,
-  deps: KgBindingDeps
+  pinakesObj: QuickJSHandle,
+  deps: PinakesBindingDeps
 ): void {
   const { repository, scope } = deps;
 
-  attachFn(context, kgObj, 'search', (args) => {
+  attachFn(context, pinakesObj, 'search', (args) => {
     const query = args[0];
     if (typeof query !== 'string') return [];
     return repository.search(query, scope).map((c) => ({
@@ -232,7 +232,7 @@ function installBackwardCompat(
     }));
   });
 
-  attachFn(context, kgObj, 'get', (args) => {
+  attachFn(context, pinakesObj, 'get', (args) => {
     const id = args[0];
     if (typeof id !== 'string') return null;
     const c = repository.get(id, scope);
@@ -244,16 +244,16 @@ function installBackwardCompat(
 /**
  * Return summary metadata for a scope (no content, just counts).
  */
-function describeScope(deps: KgBindingDeps): { chunks: number; nodes: number } {
+function describeScope(deps: PinakesBindingDeps): { chunks: number; nodes: number } {
   const reader = nextReader(deps.bundle);
   const chunks = reader
     .prepare<[string], { c: number }>(
-      `SELECT count(*) AS c FROM kg_chunks ch JOIN kg_nodes n ON ch.node_id = n.id WHERE n.scope = ?`
+      `SELECT count(*) AS c FROM pinakes_chunks ch JOIN pinakes_nodes n ON ch.node_id = n.id WHERE n.scope = ?`
     )
     .get(deps.scope)?.c ?? 0;
   const nodes = reader
     .prepare<[string], { c: number }>(
-      `SELECT count(*) AS c FROM kg_nodes WHERE scope = ?`
+      `SELECT count(*) AS c FROM pinakes_nodes WHERE scope = ?`
     )
     .get(deps.scope)?.c ?? 0;
   return { chunks, nodes };
@@ -292,7 +292,7 @@ function nodeGet(
       }
     >(
       `SELECT id, source_uri, section_path, kind, title, content, token_count, confidence
-         FROM kg_nodes
+         FROM pinakes_nodes
         WHERE id = ? AND scope = ?
         LIMIT 1`
     )
@@ -316,7 +316,7 @@ function indexQuery(
   token_count: number;
 }> {
   let sql = `SELECT id, title, source_uri, section_path, kind, token_count
-     FROM kg_nodes
+     FROM pinakes_nodes
     WHERE scope = ?`;
   const params: unknown[] = [scope];
 
@@ -371,12 +371,12 @@ function neighborsQuery(
       UNION ALL
       SELECT e.dst_id, h.depth + 1
         FROM hops h
-        JOIN kg_edges e ON e.src_id = h.node_id
+        JOIN pinakes_edges e ON e.src_id = h.node_id
        WHERE h.depth < ? ${edgeFilter}
     )
     SELECT DISTINCT n.id, n.source_uri, n.section_path, n.kind, n.title, h.depth
       FROM hops h
-      JOIN kg_nodes n ON n.id = h.node_id
+      JOIN pinakes_nodes n ON n.id = h.node_id
      WHERE n.id != ? AND n.scope = ?`;
 
   return reader.prepare(sql).all(...params) as Array<{
@@ -406,14 +406,14 @@ function logRecent(
 
   if (kind) {
     sql = `SELECT id, ts, kind, source_uri, payload
-             FROM kg_log
+             FROM pinakes_log
             WHERE scope = ? AND kind = ?
             ORDER BY ts DESC
             LIMIT ?`;
     params = [scope, kind, n];
   } else {
     sql = `SELECT id, ts, kind, source_uri, payload
-             FROM kg_log
+             FROM pinakes_log
             WHERE scope = ?
             ORDER BY ts DESC
             LIMIT ?`;
