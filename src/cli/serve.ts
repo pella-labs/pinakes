@@ -165,7 +165,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     `Use \`${executeToolName}\` for advanced operations: graph traversal, gap detection, writing new knowledge.`;
 
   const mcp = new McpServer(
-    { name: serverName, version: '0.3.3' },
+    { name: serverName, version: '0.3.4' },
     { capabilities: { tools: {} }, instructions }
   );
   mcp.registerTool(searchToolName, searchToolConfig, instrumentHandler(
@@ -384,6 +384,23 @@ function migrateLegacyInProject(projectRoot: string, newDbPath: string): void {
       logger.info({ path: legacyPinakesDir }, 'removed legacy .pinakes/ directory');
     } catch (err) {
       logger.warn({ err, from: legacyPinakesDir, to: targetDir }, 'legacy .pinakes/ migration failed — continuing');
+    }
+  }
+
+  // 3. Clean up orphaned files in project root from earlier versions
+  for (const orphan of ['manifest.json', 'kg-manifest.json']) {
+    const p = resolve(projectRoot, orphan);
+    if (existsSync(p)) {
+      // Move to target dir if not already there, otherwise just delete
+      const dst = resolve(targetDir, 'manifest.json');
+      if (!existsSync(dst)) {
+        mkdirSync(targetDir, { recursive: true });
+        renameSync(p, dst);
+        logger.info({ from: p, to: dst }, 'migrated orphaned manifest');
+      } else {
+        rmSync(p);
+        logger.info({ path: p }, 'removed orphaned manifest (already exists at target)');
+      }
     }
   }
 }
