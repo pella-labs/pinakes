@@ -1,6 +1,6 @@
 {
   "name": "@pella-labs/pinakes",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Local stdio MCP server that indexes a Karpathy-style two-level knowledge wiki into SQLite and exposes it to a coding LLM via Cloudflare-style code-mode.",
   "type": "module",
   "bin": {
@@ -14,7 +14,7 @@
     "pnpm": ">=10.30.0"
   },
   "scripts": {
-    "build": "tsc && cp -r src/db/migrations dist/db/migrations && chmod +x dist/cli/index.js",
+    "build": "tsc && rm -rf dist/db/migrations && cp -r src/db/migrations dist/db/migrations && chmod +x dist/cli/index.js",
     "dev": "tsx watch src/server.ts",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
