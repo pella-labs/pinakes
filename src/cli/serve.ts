@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, renameSync, readdirSync, cpSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, readdirSync, cpSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -85,8 +85,12 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
   migrateLegacyInProject(projectRoot, projectDb);
 
   const profileWiki = resolveAbs(options.profilePath ?? defaultPersonalWikiPath());
+  if (!existsSync(profileWiki)) {
+    mkdirSync(profileWiki, { recursive: true });
+    logger.info({ path: profileWiki }, 'created personal wiki directory');
+  }
   const profileDbPath = resolveAbs(options.profileDbPath ?? defaultPersonalDbPath());
-  const enablePersonal = existsSync(profileWiki);
+  const enablePersonal = true;
 
   // Step 1: open DBs
   const projectBundle = openDb(projectDb);
@@ -156,7 +160,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     `Use \`${executeToolName}\` for advanced operations: graph traversal, gap detection, writing new knowledge.`;
 
   const mcp = new McpServer(
-    { name: serverName, version: '0.3.1' },
+    { name: serverName, version: '0.3.2' },
     { capabilities: { tools: {} }, instructions }
   );
   mcp.registerTool(searchToolName, searchToolConfig, instrumentHandler(
@@ -370,6 +374,9 @@ function migrateLegacyInProject(projectRoot: string, newDbPath: string): void {
           logger.info({ from: src, to: dst }, 'migrated legacy .pinakes entry');
         }
       }
+      // Remove old .pinakes/ after successful migration
+      rmSync(legacyPinakesDir, { recursive: true, force: true });
+      logger.info({ path: legacyPinakesDir }, 'removed legacy .pinakes/ directory');
     } catch (err) {
       logger.warn({ err, from: legacyPinakesDir, to: targetDir }, 'legacy .pinakes/ migration failed — continuing');
     }
