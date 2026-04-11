@@ -1,13 +1,15 @@
 # @pella-labs/pinakes
 
-Local stdio MCP server that indexes a [Karpathy-style](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) two-level knowledge wiki (project + personal) into SQLite and exposes it to any coding LLM via [Cloudflare-style code-mode](https://blog.cloudflare.com/code-mode-mcp/).
+Local stdio MCP server that indexes a [Karpathy-style](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) two-level knowledge base (project + personal) into SQLite and exposes it to any coding LLM via [Cloudflare-style code-mode](https://blog.cloudflare.com/code-mode-mcp/).
 
 **Two tools. One process. Works with any MCP client.**
 
-- `search` — hybrid FTS5 + vector search ranked by Reciprocal Rank Fusion
-- `execute` — run JS in a QuickJS sandbox with `pinakes.project.*` bindings for search, graph traversal, wiki writes, and more
+- `knowledge_search` — hybrid FTS5 + vector search ranked by Reciprocal Rank Fusion
+- `knowledge_query` — run JS in a QuickJS sandbox with `pinakes.project.*` bindings for search, graph traversal, wiki writes, and more
 
 Markdown is canonical. SQLite is the index. If the index is corrupted or lost, rebuild it from markdown.
+
+All data is stored under `~/.pinakes/` — nothing is written to your project directory.
 
 Requires **Node.js 24 LTS** (`^24.10.0`).
 
@@ -16,17 +18,18 @@ Requires **Node.js 24 LTS** (`^24.10.0`).
 ### Claude Code
 
 ```bash
-claude mcp add pinakes -- npx @pella-labs/pinakes serve --wiki-path ./wiki
+claude mcp add project-docs -- npx @pella-labs/pinakes serve --wiki-path ./docs
 ```
 
-Or add to `.claude/settings.json`:
+Or add to `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
-    "pinakes": {
+    "project-docs": {
+      "type": "stdio",
       "command": "npx",
-      "args": ["@pella-labs/pinakes", "serve", "--wiki-path", "./wiki"]
+      "args": ["-y", "@pella-labs/pinakes", "serve", "--wiki-path", "./docs"]
     }
   }
 }
@@ -38,21 +41,21 @@ Add to `~/.config/goose/profiles.yaml`:
 
 ```yaml
 extensions:
-  pinakes:
-    name: pinakes
+  project-docs:
+    name: project-docs
     type: stdio
     cmd: npx
     args:
       - "@pella-labs/pinakes"
       - serve
       - --wiki-path
-      - ./wiki
+      - ./docs
 ```
 
 ### Codex
 
 ```bash
-export CODEX_MCP_SERVERS='{"pinakes":{"command":"npx","args":["@pella-labs/pinakes","serve","--wiki-path","./wiki"]}}'
+export CODEX_MCP_SERVERS='{"project-docs":{"command":"npx","args":["-y","@pella-labs/pinakes","serve","--wiki-path","./docs"]}}'
 ```
 
 ### OpenCode
@@ -62,9 +65,9 @@ Add to `opencode.json`:
 ```json
 {
   "mcp": {
-    "pinakes": {
+    "project-docs": {
       "command": "npx",
-      "args": ["@pella-labs/pinakes", "serve", "--wiki-path", "./wiki"]
+      "args": ["-y", "@pella-labs/pinakes", "serve", "--wiki-path", "./docs"]
     }
   }
 }
@@ -77,9 +80,9 @@ Add to Cursor settings (Settings > MCP Servers):
 ```json
 {
   "mcpServers": {
-    "pinakes": {
+    "project-docs": {
       "command": "npx",
-      "args": ["@pella-labs/pinakes", "serve", "--wiki-path", "./wiki"]
+      "args": ["-y", "@pella-labs/pinakes", "serve", "--wiki-path", "./docs"]
     }
   }
 }
@@ -88,47 +91,50 @@ Add to Cursor settings (Settings > MCP Servers):
 ## Quick start
 
 ```bash
-# Create a wiki directory in your project
-mkdir -p wiki
-echo "# My Project" > wiki/overview.md
+# Create a docs directory in your project
+mkdir -p docs
+echo "# My Project" > docs/overview.md
 
-# Test it directly
-npx @pella-labs/pinakes serve --wiki-path ./wiki
+# Start the server (indexes all .md files, watches for changes)
+npx @pella-labs/pinakes serve --wiki-path ./docs
 ```
 
-The server indexes all `.md` files in the wiki directory, watches for changes, and serves them over stdio.
+If you omit `--wiki-path`, the server creates a wiki directory at `~/.pinakes/projects/<project>/wiki/` automatically.
 
 ## Example queries
 
 ### Search
 
 ```
-search({ query: "authentication flow", scope: "project" })
+knowledge_search({ query: "authentication flow", scope: "project" })
 ```
 
 ### Execute (code-mode)
 
 ```javascript
-// Browse the wiki index
-execute({ code: `return pinakes.project.index()` })
+// Browse the knowledge base index
+knowledge_query({ code: `return pinakes.project.index()` })
 
 // Full-text search
-execute({ code: `return pinakes.project.fts("bcrypt")` })
+knowledge_query({ code: `return pinakes.project.fts("bcrypt")` })
 
 // Node lookup + neighbors
-execute({ code: `
+knowledge_query({ code: `
   const node = pinakes.project.get("sha1-id-here");
   const neighbors = pinakes.project.neighbors(node.id, { depth: 2 });
   return { node, neighbors };
 ` })
 
-// Write a wiki page
-execute({ code: `
+// Write a knowledge page
+knowledge_query({ code: `
   return pinakes.project.write("decisions/use-postgres.md", "# Use PostgreSQL\\nWe chose Postgres because...");
 ` })
 
+// Find under-documented areas
+knowledge_query({ code: `return pinakes.project.gaps()` })
+
 // Query across both scopes
-execute({
+knowledge_query({
   code: `return pinakes.project.hybrid("deploy process")`,
   scope: "both"
 })
@@ -136,11 +142,13 @@ execute({
 
 ## CLI commands
 
+All data is stored under `~/.pinakes/` (override with `PINAKES_ROOT`). Project data lives at `~/.pinakes/projects/<mangled-path>/`.
+
 ```bash
-npx @pella-labs/pinakes serve   --wiki-path <dir>     # Start the stdio MCP server
-npx @pella-labs/pinakes rebuild --wiki-path <dir>     # Full rebuild from markdown
+npx @pella-labs/pinakes serve   [--wiki-path <dir>]   # Start the stdio MCP server
+npx @pella-labs/pinakes rebuild [--wiki-path <dir>]   # Full rebuild from markdown
 npx @pella-labs/pinakes status                        # Health check + row counts
-npx @pella-labs/pinakes audit   [--tail] [--n 20]     # Tail the audit log
+npx @pella-labs/pinakes audit   [--n 20]              # Tail the audit log
 npx @pella-labs/pinakes purge   --scope <s> --confirm # Delete a scope's DB
 npx @pella-labs/pinakes export  --scope <s> [--out f] # Dump nodes + edges as JSON
 npx @pella-labs/pinakes import  --scope <s> --in f    # Restore from dump
@@ -178,10 +186,11 @@ Changing the embedder requires a full rebuild (`pinakes rebuild`) since the vect
 
 - **Single process**: MCP server, file watcher, SQLite writer, read pool, embedder, and QuickJS sandbox all in one Node process
 - **Single writer, multi reader**: one writer connection + 2 reader connections per DB, WAL mode
-- **Two-level KG**: project wiki (`./wiki/`) + personal wiki (`~/.pinakes/wiki/`), fully isolated by default
+- **Two-level KG**: project knowledge base + personal knowledge base (`~/.pinakes/wiki/`), fully isolated by default
 - **Privacy invariant**: personal KG bindings are only injected when `scope` includes `'personal'`
 - **Budget gate**: every response stays under `max_tokens` (default 5000, hard cap 25000)
 - **Deterministic IDs**: `sha1(scope + ':' + source_uri + ':' + section_path)` means re-indexing is idempotent
+- **Centralized storage**: all data under `~/.pinakes/`, project paths mirrored as `~/.pinakes/projects/<mangled-path>/`
 
 ## Development
 

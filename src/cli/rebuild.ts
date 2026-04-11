@@ -4,12 +4,16 @@ import { closeDb, openDb } from '../db/client.js';
 import { IngesterService } from '../ingest/ingester.js';
 import { listMarkdownFiles } from '../ingest/manifest.js';
 import { logger } from '../observability/logger.js';
+import { resolve } from 'node:path';
+
 import {
   resolveAbs,
   projectWikiPath as defaultProjectWikiPath,
   projectDbPath as defaultProjectDbPath,
   personalWikiPath as defaultPersonalWikiPath,
   personalDbPath as defaultPersonalDbPath,
+  projectDataDir,
+  pinakesRoot,
 } from '../paths.js';
 import { TransformersEmbedder, type Embedder } from '../retrieval/embedder.js';
 
@@ -97,6 +101,7 @@ export async function rebuildCommand(options: RebuildOptions): Promise<RebuildSu
       wikiDir: projectWiki,
       dbPath: projectDbPath,
       embedder,
+      manifestPath: resolve(projectDataDir(projectRoot), 'manifest.json'),
     });
     summaries.push(summary);
   }
@@ -107,6 +112,7 @@ export async function rebuildCommand(options: RebuildOptions): Promise<RebuildSu
       wikiDir: profileWiki,
       dbPath: profileDbPath,
       embedder,
+      manifestPath: resolve(pinakesRoot(), 'manifest.json'),
     });
     summaries.push(summary);
   }
@@ -119,6 +125,7 @@ async function rebuildOneScope(args: {
   wikiDir: string;
   dbPath: string;
   embedder: Embedder;
+  manifestPath?: string;
 }): Promise<RebuildSummary> {
   const { scope, wikiDir, dbPath, embedder } = args;
   const t0 = Date.now();
@@ -141,7 +148,9 @@ async function rebuildOneScope(args: {
       }
     }
 
-    const ingester = new IngesterService(bundle, embedder, scope, wikiDir);
+    const ingester = new IngesterService(bundle, embedder, scope, wikiDir, {
+      manifestPath: args.manifestPath,
+    });
     const files = listMarkdownFiles(wikiDir);
 
     let nodes = 0;

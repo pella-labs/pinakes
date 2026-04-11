@@ -22,6 +22,7 @@ import {
   personalDbPath as defaultPersonalDbPath,
   personalAuditJsonlPath,
   projectDataDir,
+  pinakesRoot,
 } from '../paths.js';
 import { writeAuditRow, type AuditEntry } from '../observability/audit.js';
 import { child, logger } from '../observability/logger.js';
@@ -101,9 +102,13 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
   await embedder.warmup();
 
   // Step 3: ingesters per scope
-  const projectIngester = new IngesterService(projectBundle, embedder, 'project', projectWiki);
+  const projectIngester = new IngesterService(projectBundle, embedder, 'project', projectWiki, {
+    manifestPath: resolve(projectDataDir(projectRoot), 'manifest.json'),
+  });
   const personalIngester = personalBundle
-    ? new IngesterService(personalBundle, embedder, 'personal', profileWiki)
+    ? new IngesterService(personalBundle, embedder, 'personal', profileWiki, {
+        manifestPath: resolve(pinakesRoot(), 'manifest.json'),
+      })
     : null;
 
   // Step 4: startup consistency check — re-ingest any stale files.
@@ -160,7 +165,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     `Use \`${executeToolName}\` for advanced operations: graph traversal, gap detection, writing new knowledge.`;
 
   const mcp = new McpServer(
-    { name: serverName, version: '0.3.2' },
+    { name: serverName, version: '0.3.3' },
     { capabilities: { tools: {} }, instructions }
   );
   mcp.registerTool(searchToolName, searchToolConfig, instrumentHandler(
