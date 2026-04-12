@@ -72,13 +72,15 @@ export function createLlmProvider(mcpServer?: McpServerLike): LlmProvider {
   }
 
   // 4. claude -p subprocess
-  if (whichSync('claude')) {
-    return new ClaudeSubprocessProvider();
+  const claudePath = resolveCommand('claude');
+  if (claudePath) {
+    return new ClaudeSubprocessProvider(claudePath);
   }
 
   // 5. codex exec subprocess
-  if (whichSync('codex')) {
-    return new CodexSubprocessProvider();
+  const codexPath = resolveCommand('codex');
+  if (codexPath) {
+    return new CodexSubprocessProvider(codexPath);
   }
 
   // 6. Disabled
@@ -203,12 +205,14 @@ class OpenAiApiProvider implements LlmProvider {
 class ClaudeSubprocessProvider implements LlmProvider {
   readonly name = 'claude-subprocess';
 
+  constructor(private readonly binPath: string) {}
+
   available(): boolean {
     return true;
   }
 
   async complete(opts: { system: string; prompt: string; maxTokens: number }): Promise<string> {
-    return runSubprocess('claude', [
+    return runSubprocess(this.binPath, [
       '-p', opts.prompt,
       '--bare',
       '--tools', '',
@@ -223,12 +227,14 @@ class ClaudeSubprocessProvider implements LlmProvider {
 class CodexSubprocessProvider implements LlmProvider {
   readonly name = 'codex-subprocess';
 
+  constructor(private readonly binPath: string) {}
+
   available(): boolean {
     return true;
   }
 
   async complete(opts: { system: string; prompt: string; maxTokens: number }): Promise<string> {
-    return runSubprocess('codex', [
+    return runSubprocess(this.binPath, [
       'exec',
       `${opts.system}\n\n${opts.prompt}`,
       '--ephemeral',
@@ -257,22 +263,50 @@ class DisabledProvider implements LlmProvider {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Check if a binary exists in PATH (synchronous, cached). */
-const binaryCache = new Map<string, boolean>();
+/**
+ * Resolve a binary to its absolute path (synchronous, cached).
+ * Checks PATH via `which`, then falls back to common install locations
+ * (npx strips ~/.local/bin, ~/.cargo/bin, etc. from PATH).
+ */
+const binaryCache = new Map<string, string | false>();
+
+const COMMON_BIN_DIRS = [
+  `${process.env.HOME}/.local/bin`,
+  `${process.env.HOME}/.cargo/bin`,
+  '/usr/local/bin',
+  '/opt/homebrew/bin',
+];
 
 function whichSync(name: string): boolean {
+  return resolveCommand(name) !== false;
+}
+
+function resolveCommand(name: string): string | false {
   const cached = binaryCache.get(name);
   if (cached !== undefined) return cached;
 
+  // 1. Try PATH via `which`
   try {
     const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
-    execFileSync('which', [name], { stdio: 'ignore' });
-    binaryCache.set(name, true);
-    return true;
-  } catch {
-    binaryCache.set(name, false);
-    return false;
+    const resolved = execFileSync('which', [name], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+    if (resolved) {
+      binaryCache.set(name, resolved);
+      return resolved;
+    }
+  } catch { /* not in PATH */ }
+
+  // 2. Check common install locations (npx strips ~/.local/bin etc.)
+  const { existsSync } = require('node:fs') as typeof import('node:fs');
+  for (const dir of COMMON_BIN_DIRS) {
+    const candidate = `${dir}/${name}`;
+    if (existsSync(candidate)) {
+      binaryCache.set(name, candidate);
+      return candidate;
+    }
   }
+
+  binaryCache.set(name, false);
+  return false;
 }
 
 /** Run a CLI tool and return its stdout. Timeout: 30s. */
