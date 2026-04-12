@@ -53,11 +53,12 @@ pnpm run test:budget                    # budget gate adversarial suite
 pnpm run db:migrate                     # apply drizzle migrations
 pnpm run db:generate                    # generate new migration from schema changes
 
-# CLI — all data stored under ~/.pinakes/ (set PINAKES_ROOT to override)
+# CLI — wiki at <project>/.pinakes/wiki/, index data under ~/.pinakes/
 pnpm run pinakes -- serve                       # stdio MCP server (project root = cwd)
 pnpm run pinakes -- rebuild                     # full rebuild from markdown
 pnpm run pinakes -- status                      # health + row counts
 pnpm run pinakes -- audit --tail                # tail pinakes_audit
+pnpm run pinakes -- audit-wiki                  # LLM-powered wiki audit (contradictions, gaps)
 pnpm run pinakes -- purge --scope <s>           # delete a scope's DB
 pnpm run pinakes -- export --scope <s>          # dump nodes + edges as JSON
 pnpm run pinakes -- import --scope <s> --in f   # restore from dump
@@ -75,7 +76,7 @@ pnpm run pinakes -- import --scope <s> --in f   # restore from dump
    ```
    src/
      server.ts                 # MCP stdio server entry
-     paths.ts                  # centralized path resolution (~/.pinakes/ layout)
+     paths.ts                  # centralized path resolution (in-repo wiki + ~/.pinakes/ index)
      cli/                      # CLI subcommands
      mcp/                      # MCP tool definitions + dispatcher
        tools/search.ts
@@ -90,9 +91,13 @@ pnpm run pinakes -- import --scope <s> --in f   # restore from dump
        schema.ts               # drizzle schema (ALL 8 tables)
        client.ts               # connection management
        migrations/
+     init/
+       scanner.ts              # repo markdown discovery (git ls-files + fallback walk)
+       copy.ts                 # structure-preserving copy to wiki
      ingest/
        source.ts               # IngestSource interface
        chokidar.ts             # ChokidarWatcher implementation
+       repo-mirror.ts          # one-way repo→wiki sync watcher
        queue.ts                # QueueSubscriber (stub until contract lands)
        ingester.ts             # single-flight writer
        parse/
@@ -158,7 +163,7 @@ pnpm run pinakes -- import --scope <s> --in f   # restore from dump
 
 10. **Vector dims**: currently 384 (MiniLM default). If user swaps embedder, `pinakes_chunks_vec` must be dropped and recreated with new dims, then all chunks re-embedded. Do this as a distinct migration path.
 
-11. **Standalone DB files**: `~/.pinakes/projects/<mangled>/pinakes.db` for project KG, `~/.pinakes/pinakes.db` for personal KG. No shared schema with any external app. The `--db-path` flag overrides the default for backward compatibility with existing deployments. Project paths are mangled using the Claude Code convention (`/` → `-`), e.g. `/Users/me/dev/proj` → `~/.pinakes/projects/-Users-me-dev-proj/`.
+11. **Wiki in-repo, index centralized**: Project wiki lives at `<projectRoot>/.pinakes/wiki/` (committed to git). Index files (DB, manifest, audit) live at `~/.pinakes/projects/<mangled>/` (not committed). Personal KG at `~/.pinakes/pinakes.db`. The `--db-path` flag overrides the default for backward compatibility. On first `serve` startup, if `.pinakes/wiki/` doesn't exist, all repo `.md` files are auto-copied into it. A repo mirror watcher keeps them in sync (one-way: repo→wiki).
 
 12. **Personal KG hard cap: 5,000 chunks with LRU eviction** on `last_accessed_at`. Personal KG accumulates across every repo the developer touches; without a cap it grows unbounded and bloats vector search latency (200ms+ per query at 50K chunks). Every row in `pinakes_nodes` and `pinakes_chunks` for `scope='personal'` has a `last_accessed_at` timestamp bumped on every read. On ingest, if the personal KG exceeds 5000 chunks, evict the oldest-accessed nodes (cascades to chunks/edges) until under the cap. The project KG has no cap (scoped to the repo, dies with the repo).
 
@@ -283,9 +288,8 @@ pnpm run pinakes -- import --scope <s> --in f   # restore from dump
 ## Environment Variables
 
 ```bash
-# Paths — all data lives under PINAKES_ROOT (default ~/.pinakes)
-PINAKES_ROOT=~/.pinakes                             # optional; all data lives here
-PINAKES_WIKI_PATH=                                  # optional override; default ~/.pinakes/projects/<mangled-cwd>/wiki
+# Paths — wiki at <project>/.pinakes/wiki/, index data under PINAKES_ROOT
+PINAKES_ROOT=~/.pinakes                             # optional; index data lives here
 
 # Embedder selection
 PINAKES_EMBED_PROVIDER=transformers                 # transformers | ollama | voyage | openai

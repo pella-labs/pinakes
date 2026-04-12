@@ -17,7 +17,6 @@ export interface ImportOptions {
   scope: 'project' | 'personal';
   inFile: string;
   dbPath?: string;
-  wikiPath?: string;
   profileDbPath?: string;
 }
 

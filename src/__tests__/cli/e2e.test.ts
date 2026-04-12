@@ -165,7 +165,7 @@ describe('fresh-install e2e (Phase 7)', () => {
 
   // CLI subcommands
   it('status command returns valid data', () => {
-    const statuses = statusCommand({ dbPath, wikiPath: wikiDir });
+    const statuses = statusCommand({ dbPath });
     expect(statuses.length).toBe(2); // project + personal
     const project = statuses.find((s) => s.scope === 'project')!;
     expect(project.exists).toBe(true);

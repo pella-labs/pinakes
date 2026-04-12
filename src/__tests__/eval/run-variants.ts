@@ -10,9 +10,14 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { resolve } from 'node:path';
 import { PINAKES_SCENARIOS, type Scenario } from './scenarios.js';
 
-const FIXTURE_PROJECT = resolve(import.meta.dirname, '../fixtures');
-const WIKI_PATH = resolve(FIXTURE_PROJECT, 'wiki-100');
+const FIXTURE_ROOT = resolve(import.meta.dirname, '../fixtures');
 const SERVER_TS = resolve(import.meta.dirname, '../../server.ts');
+// The eval server now derives wiki path from --project-root (<root>/.pinakes/wiki/).
+// We use a synthetic project root so that .pinakes/wiki/ resolves to wiki-100.
+// Achieved by setting FIXTURE_PROJECT to the parent of .pinakes/wiki/ → fixtures/ itself,
+// with a symlink or by passing --project-root to a dir whose .pinakes/wiki = wiki-100.
+// Simplest: pass --project-root pointing to eval-project/ which has .pinakes/wiki/ → wiki-100
+const FIXTURE_PROJECT = resolve(FIXTURE_ROOT, 'eval-project');
 
 // ---------------------------------------------------------------------------
 // Variant definitions — each tweaks what the eval server looks like
@@ -113,7 +118,7 @@ async function runScenario(
         mcpServers: {
           [variant.serverName]: {
             command: 'tsx',
-            args: [SERVER_TS, '--wiki-path', WIKI_PATH],
+            args: [SERVER_TS, '--project-root', FIXTURE_PROJECT],
             env: { ...process.env, ...variant.serverEnv },
           },
         },

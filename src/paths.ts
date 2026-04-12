@@ -1,12 +1,16 @@
 /**
  * Centralized path resolution for Pinakes.
  *
- * All Pinakes data lives under a single root directory (~/.pinakes by default).
- * Project data is stored in mirrored paths under ~/.pinakes/projects/, using
- * the Claude Code convention of replacing '/' with '-' in the absolute project
- * path. Personal data lives directly under the root.
+ * Project wiki lives in-repo at `<projectRoot>/.pinakes/wiki/` (committed to
+ * git, team-shared). Index files (DB, manifest, audit) live under the
+ * centralized `~/.pinakes/projects/<mangled>/` directory (not committed).
+ * Personal data lives directly under `~/.pinakes/`.
  *
  * Layout:
+ *   <projectRoot>/.pinakes/
+ *     wiki/                                       # project wiki (committed)
+ *     .gitignore                                  # auto-generated (committed)
+ *
  *   ~/.pinakes/
  *     wiki/                                       # personal wiki
  *     pinakes.db                                  # personal DB
@@ -14,12 +18,12 @@
  *     manifest.json                               # personal manifest
  *     projects/
  *       -Users-sebastian-dev-myproject/            # mangled project root
- *         wiki/                                   # project wiki
  *         pinakes.db                              # project DB
  *         audit.jsonl                             # project audit
  *         manifest.json                           # project manifest
  */
 
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 
@@ -71,6 +75,14 @@ export function projectDataDir(projectRoot: string): string {
 }
 
 export function projectWikiPath(projectRoot: string): string {
+  return resolve(resolveAbs(projectRoot), '.pinakes', 'wiki');
+}
+
+/**
+ * Legacy wiki path (pre-v0.3): `~/.pinakes/projects/<mangled>/wiki/`.
+ * Used only by the migration function in serve.ts.
+ */
+export function legacyProjectWikiPath(projectRoot: string): string {
   return resolve(projectDataDir(projectRoot), 'wiki');
 }
 
@@ -113,8 +125,33 @@ export function personalManifestPath(): string {
 export interface CliPathOverrides {
   projectRoot?: string;
   dbPath?: string;
-  wikiPath?: string;
   profileDbPath?: string;
+}
+
+// ---------------------------------------------------------------------------
+// .gitignore auto-generation
+// ---------------------------------------------------------------------------
+
+const PINAKES_GITIGNORE_CONTENT = `# Pinakes index files — NOT committed to git
+# The wiki/ directory IS committed (shared team knowledge)
+pinakes.db
+manifest.json
+audit.jsonl
+*.db-wal
+*.db-shm
+`;
+
+/**
+ * Ensure `<projectRoot>/.pinakes/.gitignore` exists so the DB, manifest, and
+ * audit files are never accidentally committed. Idempotent — skips if file
+ * already exists.
+ */
+export function ensurePinakesGitignore(projectRoot: string): void {
+  const pinakesDir = resolve(resolveAbs(projectRoot), '.pinakes');
+  const gitignorePath = resolve(pinakesDir, '.gitignore');
+  if (existsSync(gitignorePath)) return;
+  mkdirSync(pinakesDir, { recursive: true });
+  writeFileSync(gitignorePath, PINAKES_GITIGNORE_CONTENT, 'utf-8');
 }
 
 /**

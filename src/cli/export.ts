@@ -23,7 +23,6 @@ export interface ExportOptions {
   scope: 'project' | 'personal';
   out?: string;
   dbPath?: string;
-  wikiPath?: string;
   profileDbPath?: string;
 }
 

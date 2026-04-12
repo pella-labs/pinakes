@@ -38,10 +38,8 @@ import { TransformersEmbedder, type Embedder } from '../retrieval/embedder.js';
  */
 
 export interface RebuildOptions {
-  /** Project root directory (default: cwd). Used to derive the mirrored data dir under ~/.pinakes/projects/. */
+  /** Project root directory (default: cwd). Wiki lives at `<projectRoot>/.pinakes/wiki/`. */
   projectRoot?: string;
-  /** Project wiki directory (default: `~/.pinakes/projects/<mangled-root>/wiki`) */
-  wikiPath?: string;
   /** Project DB path (default: `~/.pinakes/projects/<mangled-root>/pinakes.db`) */
   dbPath?: string;
   /** Personal wiki directory (default: `~/.pinakes/wiki`) */
@@ -77,7 +75,7 @@ export async function rebuildCommand(options: RebuildOptions): Promise<RebuildSu
   const summaries: RebuildSummary[] = [];
 
   const projectRoot = resolveAbs(options.projectRoot ?? process.cwd());
-  const projectWiki = resolveAbs(options.wikiPath ?? defaultProjectWikiPath(projectRoot));
+  const projectWiki = defaultProjectWikiPath(projectRoot);
   if (!existsSync(projectWiki)) {
     throw new Error(`wiki path does not exist: ${projectWiki}`);
   }

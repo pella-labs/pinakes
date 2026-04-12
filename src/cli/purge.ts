@@ -13,7 +13,6 @@ export interface PurgeOptions {
   scope: 'project' | 'personal';
   confirm?: boolean;
   dbPath?: string;
-  wikiPath?: string;
   profileDbPath?: string;
 }
 

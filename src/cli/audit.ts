@@ -17,8 +17,6 @@ export interface AuditOptions {
   projectRoot?: string;
   /** Project DB path override */
   dbPath?: string;
-  /** Wiki path (unused in new layout, kept for backwards compat) */
-  wikiPath?: string;
   /** Personal DB path */
   profileDbPath?: string;
   /** Which scope to tail: 'project' | 'personal' (default 'project') */

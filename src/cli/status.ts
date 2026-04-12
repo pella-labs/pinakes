@@ -19,8 +19,6 @@ export interface StatusOptions {
   projectRoot?: string;
   /** Path to project DB override */
   dbPath?: string;
-  /** Path to project wiki dir (unused in new layout, kept for backwards compat) */
-  wikiPath?: string;
   /** Path to personal DB (default: `~/.pinakes/pinakes.db`) */
   profileDbPath?: string;
 }

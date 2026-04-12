@@ -9,6 +9,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { closeDb, openDb, type DbBundle } from '../db/client.js';
 import { Repository } from '../db/repository.js';
 import { ChokidarWatcher } from '../ingest/chokidar.js';
+import { RepoMirrorWatcher } from '../ingest/repo-mirror.js';
+import { scanRepoMarkdownFiles } from '../init/scanner.js';
+import { copyMarkdownToWiki } from '../init/copy.js';
 import { IngesterService } from '../ingest/ingester.js';
 import { checkConsistency, listMarkdownFiles } from '../ingest/manifest.js';
 import { executeToolConfig, makeExecuteHandler } from '../mcp/tools/execute.js';
@@ -23,6 +26,8 @@ import {
   personalAuditJsonlPath,
   projectDataDir,
   pinakesRoot,
+  legacyProjectWikiPath,
+  ensurePinakesGitignore,
 } from '../paths.js';
 import { writeAuditRow, type AuditEntry } from '../observability/audit.js';
 import { child, logger } from '../observability/logger.js';
@@ -53,10 +58,8 @@ import type { IngestEvent } from '../ingest/source.js';
  */
 
 export interface ServeOptions {
-  /** Project root directory (default: cwd). Used to derive the mirrored data dir under ~/.pinakes/projects/. */
+  /** Project root directory (default: cwd). Wiki lives at `<projectRoot>/.pinakes/wiki/`. */
   projectRoot?: string;
-  /** Project wiki directory (default: `~/.pinakes/projects/<mangled-root>/wiki`) */
-  wikiPath?: string;
   /** Project DB path (default: `~/.pinakes/projects/<mangled-root>/pinakes.db`) */
   dbPath?: string;
   /** Personal wiki directory (default: `~/.pinakes/wiki`) */
@@ -77,10 +80,27 @@ interface ServerHandle {
  */
 export async function buildServer(options: ServeOptions): Promise<ServerHandle> {
   const projectRoot = resolveAbs(options.projectRoot ?? process.cwd());
-  const projectWiki = resolveAbs(options.wikiPath ?? defaultProjectWikiPath(projectRoot));
+
+  // Ensure .pinakes/.gitignore exists before any wiki operations
+  ensurePinakesGitignore(projectRoot);
+
+  // Migrate wiki from old centralized location to in-repo path
+  migrateLegacyWikiToInRepo(projectRoot);
+
+  const projectWiki = defaultProjectWikiPath(projectRoot);
   if (!existsSync(projectWiki)) {
+    // First run — seed wiki from all repo markdown files
+    const repoFiles = scanRepoMarkdownFiles(projectRoot);
     mkdirSync(projectWiki, { recursive: true });
-    logger.info({ path: projectWiki }, 'created wiki directory');
+    if (repoFiles.length > 0) {
+      const copyResult = copyMarkdownToWiki(repoFiles, projectRoot, projectWiki);
+      logger.info(
+        { copied: copyResult.files_copied, skipped: copyResult.files_skipped, bytes: copyResult.total_bytes },
+        'seeded wiki from repo markdown files'
+      );
+    } else {
+      logger.info({ path: projectWiki }, 'created empty wiki directory (no .md files found in repo)');
+    }
   }
   const projectDb = resolveAbs(options.dbPath ?? defaultProjectDbPath(projectRoot));
   migrateLegacyInProject(projectRoot, projectDb);
@@ -130,6 +150,13 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
   if (personalWatcher && personalIngester) {
     await personalWatcher.start(makeOnEvent(personalIngester));
   }
+
+  // Step 5b: repo mirror watcher — one-way sync from project root → wiki
+  const repoMirror = new RepoMirrorWatcher({
+    projectRoot,
+    wikiRoot: projectWiki,
+  });
+  await repoMirror.start();
 
   // Step 6: build the MCP server
   const repository = new Repository(projectBundle, personalBundle);
@@ -246,6 +273,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     logger.info({ signal }, 'pinakes shutting down');
     try {
       clearInterval(healthCheckTimer);
+      await repoMirror.stop();
       await projectWatcher.stop();
       if (personalWatcher) await personalWatcher.stop();
       await mcp.close();
@@ -340,13 +368,41 @@ async function runStartupConsistency(
 }
 
 /**
+ * Migrate wiki from the old centralized `~/.pinakes/projects/<mangled>/wiki/`
+ * to the new in-repo `<projectRoot>/.pinakes/wiki/` path.
+ *
+ * Uses cpSync (not renameSync) because old and new paths may be on different
+ * filesystems. Safe: if copy fails, old data remains untouched.
+ */
+function migrateLegacyWikiToInRepo(projectRoot: string): void {
+  const oldWiki = legacyProjectWikiPath(projectRoot);
+  const newWiki = defaultProjectWikiPath(projectRoot);
+
+  if (existsSync(oldWiki) && !existsSync(newWiki)) {
+    try {
+      mkdirSync(dirname(newWiki), { recursive: true });
+      cpSync(oldWiki, newWiki, { recursive: true });
+      rmSync(oldWiki, { recursive: true, force: true });
+      logger.info({ from: oldWiki, to: newWiki }, 'migrated wiki from centralized to in-repo path');
+    } catch (err) {
+      logger.warn({ err, from: oldWiki, to: newWiki }, 'wiki migration failed — continuing');
+    }
+  } else if (existsSync(oldWiki) && existsSync(newWiki)) {
+    logger.warn(
+      { old: oldWiki, new: newWiki },
+      'wiki exists at both legacy and in-repo paths — using in-repo path. Remove legacy path manually if no longer needed.'
+    );
+  }
+}
+
+/**
  * Migrate legacy data from in-project `.pinakes/` (or `kg.db`) to the new
  * centralized `~/.pinakes/projects/<mangled>/` layout.
  *
  * Handles three legacy layouts:
  *   1. `<projectRoot>/kg.db` — Phase 1 flat layout
- *   2. `<projectRoot>/.pinakes/` — Phase 2 in-project layout
- *   3. `~/.pharos/profile/` — legacy personal wiki location
+ *   2. `<projectRoot>/.pinakes/` — Phase 2 in-project layout (DB/manifest/audit only; wiki stays in-repo)
+ *   3. Orphaned manifest files in project root
  */
 function migrateLegacyInProject(projectRoot: string, newDbPath: string): void {
   const targetDir = projectDataDir(projectRoot);
@@ -363,25 +419,25 @@ function migrateLegacyInProject(projectRoot: string, newDbPath: string): void {
     logger.info({ from: legacyDb, to: newDbPath }, 'migrated legacy kg.db');
   }
 
-  // 2. Legacy in-project .pinakes/ directory
+  // 2. Legacy in-project .pinakes/ — only migrate non-wiki items (DB, manifest,
+  //    audit) to centralized location. Wiki stays in-repo.
   const legacyPinakesDir = resolve(projectRoot, '.pinakes');
   if (existsSync(legacyPinakesDir) && legacyPinakesDir !== targetDir) {
     mkdirSync(targetDir, { recursive: true });
-    // Copy contents (DB, audit.jsonl, manifest.json, wiki/) to new location
-    // Only migrate files that don't already exist at the target
     try {
       const entries = readdirSync(legacyPinakesDir, { withFileTypes: true });
       for (const entry of entries) {
+        // Skip wiki/ and .gitignore — they belong in-repo
+        if (entry.name === 'wiki' || entry.name === '.gitignore') continue;
         const src = resolve(legacyPinakesDir, entry.name);
         const dst = resolve(targetDir, entry.name);
         if (!existsSync(dst)) {
           cpSync(src, dst, { recursive: true });
           logger.info({ from: src, to: dst }, 'migrated legacy .pinakes entry');
         }
+        // Remove the migrated source entry (but keep .pinakes/ dir since wiki lives there now)
+        rmSync(src, { recursive: true, force: true });
       }
-      // Remove old .pinakes/ after successful migration
-      rmSync(legacyPinakesDir, { recursive: true, force: true });
-      logger.info({ path: legacyPinakesDir }, 'removed legacy .pinakes/ directory');
     } catch (err) {
       logger.warn({ err, from: legacyPinakesDir, to: targetDir }, 'legacy .pinakes/ migration failed — continuing');
     }

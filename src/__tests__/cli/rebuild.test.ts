@@ -37,7 +37,7 @@ describe('cli/rebuild (Phase 2)', () => {
   beforeEach(() => {
     __resetSingleFlightForTests();
     const tmp = mkdtempSync(join(tmpdir(), 'pinakes-rebuild-'));
-    const wikiDir = join(tmp, 'wiki');
+    const wikiDir = join(tmp, '.pinakes', 'wiki');
     mkdirSync(wikiDir, { recursive: true });
 
     // Copy all 3 fixtures into the temp wiki dir
@@ -63,7 +63,7 @@ describe('cli/rebuild (Phase 2)', () => {
 
       const t0 = Date.now();
       const summaries = await rebuildCommand({
-        wikiPath: c.wikiDir,
+        projectRoot: c.tmp,
         dbPath: c.dbPath,
         scope: 'project', // skip personal — fixture is project-only
         embedder: new CountingEmbedder(getDefaultEmbedder()),
@@ -110,7 +110,7 @@ describe('cli/rebuild (Phase 2)', () => {
     async () => {
       const c = ctx!;
       await rebuildCommand({
-        wikiPath: c.wikiDir,
+        projectRoot: c.tmp,
         dbPath: c.dbPath,
         scope: 'project',
         embedder: new CountingEmbedder(getDefaultEmbedder()),
@@ -157,7 +157,7 @@ describe('cli/rebuild (Phase 2)', () => {
     async () => {
       const c = ctx!;
       await rebuildCommand({
-        wikiPath: c.wikiDir,
+        projectRoot: c.tmp,
         dbPath: c.dbPath,
         scope: 'project',
         embedder: new CountingEmbedder(getDefaultEmbedder()),

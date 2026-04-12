@@ -26,17 +26,14 @@ import { ALL_SCENARIOS, PINAKES_SCENARIOS, BUILTIN_SCENARIOS, type Scenario } fr
 // Config
 // ---------------------------------------------------------------------------
 
-/** Path to a fixture project that has wiki content for Pinakes to index. */
-const FIXTURE_PROJECT = resolve(import.meta.dirname, '../fixtures');
-
-/** Use wiki-100 for a more realistic knowledge base (100 files, ~4600 lines). */
-const WIKI_PATH = resolve(FIXTURE_PROJECT, 'wiki-100');
+/** Path to a fixture project that has .pinakes/wiki/ content for Pinakes to index. */
+const FIXTURE_PROJECT = resolve(import.meta.dirname, '../fixtures/eval-project');
 
 /** The MCP server command — run our Pinakes server against the fixture wiki. */
 const PINAKES_SERVER_CMD = 'tsx';
 const PINAKES_SERVER_ARGS = [
   resolve(import.meta.dirname, '../../server.ts'),
-  '--wiki-path', WIKI_PATH,
+  '--project-root', FIXTURE_PROJECT,
 ];
 
 const PINAKES_TOOL_NAMES = new Set(['search', 'execute']);

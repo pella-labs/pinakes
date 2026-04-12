@@ -6,12 +6,17 @@ coverage/
 *.log
 .DS_Store
 
-# SQLite — safety net in case legacy .pinakes/ still exists locally
+# SQLite — safety net for any DB files in the repo
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
-.pinakes/
+
+# Pinakes — allow wiki and .gitignore to be committed, ignore everything else
+.pinakes/*
+!.pinakes/wiki/
+!.pinakes/.gitignore
+
 .pharos/
 
 # Editor

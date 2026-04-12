@@ -16,15 +16,12 @@ import { contradictionScan, type ContradictionResult } from './contradiction.js'
 export async function contradictionScanCommand(opts: {
   scope: 'project' | 'personal';
   projectRoot?: string;
-  wikiPath?: string;
   dbPath?: string;
 }): Promise<ContradictionResult> {
   const projectRoot = resolveAbs(opts.projectRoot ?? process.cwd());
-  const wikiPath = opts.wikiPath
-    ? resolveAbs(opts.wikiPath)
-    : opts.scope === 'personal'
-      ? defaultPersonalWikiPath()
-      : defaultProjectWikiPath(projectRoot);
+  const wikiPath = opts.scope === 'personal'
+    ? defaultPersonalWikiPath()
+    : defaultProjectWikiPath(projectRoot);
   const dbPath = opts.dbPath
     ? resolveAbs(opts.dbPath)
     : opts.scope === 'personal'

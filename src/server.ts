@@ -12,16 +12,16 @@ import { logger } from './observability/logger.js';
  * have a stable, single-purpose entry without `pinakes serve` argv prefix gymnastics.
  *
  * Behavior:
- *   - Reads `--project-root`, `--wiki-path`, `--db-path`, `--profile-path`,
+ *   - Reads `--project-root`, `--db-path`, `--profile-path`,
  *     `--profile-db-path` from argv
- *   - All data stored under `~/.pinakes/` (override with `PINAKES_ROOT`)
+ *   - Wiki lives at `<projectRoot>/.pinakes/wiki/` (auto-derived, not overridable)
+ *   - Index data stored under `~/.pinakes/` (override with `PINAKES_ROOT`)
  *   - Boots the full Phase 2 stack (DB, embedder, chokidar watchers, MCP server)
  *   - Listens on stdio and runs forever until SIGTERM/SIGINT
  */
 
 interface ParsedArgs {
   projectRoot?: string;
-  wikiPath?: string;
   dbPath?: string;
   profilePath?: string;
   profileDbPath?: string;
@@ -29,10 +29,6 @@ interface ParsedArgs {
 
 function parseArgs(argv: string[]): ParsedArgs {
   const out: ParsedArgs = {};
-  // Legacy env support — PINAKES_WIKI_PATH still works as wiki path override
-  if (process.env.PINAKES_WIKI_PATH) {
-    out.wikiPath = process.env.PINAKES_WIKI_PATH;
-  }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (!arg) continue;
@@ -41,11 +37,6 @@ function parseArgs(argv: string[]): ParsedArgs {
       i++;
     } else if (arg.startsWith('--project-root=')) {
       out.projectRoot = arg.slice('--project-root='.length);
-    } else if (arg === '--wiki-path' && argv[i + 1]) {
-      out.wikiPath = argv[i + 1];
-      i++;
-    } else if (arg.startsWith('--wiki-path=')) {
-      out.wikiPath = arg.slice('--wiki-path='.length);
     } else if (arg === '--db-path' && argv[i + 1]) {
       out.dbPath = argv[i + 1];
       i++;
@@ -70,7 +61,6 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   await serveCommand({
     projectRoot: args.projectRoot,
-    wikiPath: args.wikiPath,
     dbPath: args.dbPath,
     profilePath: args.profilePath,
     profileDbPath: args.profileDbPath,

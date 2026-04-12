@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { auditCommand, renderAudit } from './audit.js';
+import { auditWikiCommand } from './audit-wiki.js';
 import { contradictionScanCommand } from './contradiction-cli.js';
 import { exportCommand, renderExport } from './export.js';
 import { importCommand, renderImport } from './import.js';
@@ -16,9 +17,9 @@ import { logger } from '../observability/logger.js';
  * stack rule "Do not add new dependencies without justification."
  *
  * Subcommands:
- *   pinakes serve   --wiki-path <dir> [--db-path] [--profile-path] [--profile-db-path]
- *   pinakes rebuild --wiki-path <dir> [--db-path] [--scope project|personal|both]
- *   pinakes status  [--db-path <path>] [--wiki-path <dir>] [--profile-db-path <path>]
+ *   pinakes serve   [--project-root <dir>] [--db-path] [--profile-path] [--profile-db-path]
+ *   pinakes rebuild [--project-root <dir>] [--db-path] [--scope project|personal|both]
+ *   pinakes status  [--project-root <dir>] [--db-path <path>] [--profile-db-path <path>]
  */
 
 type Flags = Record<string, string | true>;
@@ -68,7 +69,6 @@ async function main(): Promise<void> {
     case 'serve': {
       await serveCommand({
         projectRoot: getString(flags, 'project-root'),
-        wikiPath: getString(flags, 'wiki-path'),
         dbPath: getString(flags, 'db-path'),
         profilePath: getString(flags, 'profile-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
@@ -84,7 +84,6 @@ async function main(): Promise<void> {
         | undefined;
       const summaries = await rebuildCommand({
         projectRoot: getString(flags, 'project-root'),
-        wikiPath: getString(flags, 'wiki-path'),
         dbPath: getString(flags, 'db-path'),
         profilePath: getString(flags, 'profile-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
@@ -104,7 +103,6 @@ async function main(): Promise<void> {
     case 'status': {
       const statuses = statusCommand({
         dbPath: getString(flags, 'db-path'),
-        wikiPath: getString(flags, 'wiki-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
       });
       // eslint-disable-next-line no-console
@@ -116,12 +114,24 @@ async function main(): Promise<void> {
       const rows = auditCommand({
         n: getString(flags, 'n') ? parseInt(getString(flags, 'n')!, 10) : undefined,
         dbPath: getString(flags, 'db-path'),
-        wikiPath: getString(flags, 'wiki-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
         scope: (getString(flags, 'scope') as 'project' | 'personal') ?? undefined,
       });
       // eslint-disable-next-line no-console
       console.log(renderAudit(rows));
+      break;
+    }
+
+    case 'audit-wiki': {
+      const result = await auditWikiCommand({
+        projectRoot: getString(flags, 'project-root'),
+        dbPath: getString(flags, 'db-path'),
+      });
+      // eslint-disable-next-line no-console
+      console.log(
+        `\nAudit complete: ${result.contradictions.contradictions.length} contradictions, ` +
+          `${result.gaps_found} gaps, ${result.stub_pages_created.length} stub pages created.`
+      );
       break;
     }
 
@@ -131,7 +141,6 @@ async function main(): Promise<void> {
         scope,
         confirm: flags['confirm'] === true,
         dbPath: getString(flags, 'db-path'),
-        wikiPath: getString(flags, 'wiki-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
       });
       // eslint-disable-next-line no-console
@@ -146,7 +155,6 @@ async function main(): Promise<void> {
         scope,
         out,
         dbPath: getString(flags, 'db-path'),
-        wikiPath: getString(flags, 'wiki-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
       });
       if (!out) {
@@ -165,7 +173,6 @@ async function main(): Promise<void> {
         scope,
         inFile: getRequiredString(flags, 'in'),
         dbPath: getString(flags, 'db-path'),
-        wikiPath: getString(flags, 'wiki-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
       });
       // eslint-disable-next-line no-console
@@ -177,7 +184,7 @@ async function main(): Promise<void> {
       const scope = (getString(flags, 'scope') ?? 'project') as 'project' | 'personal';
       const result = await contradictionScanCommand({
         scope,
-        wikiPath: getString(flags, 'wiki-path'),
+        projectRoot: getString(flags, 'project-root'),
         dbPath: getString(flags, 'db-path'),
       });
       if (result.rate_limited) {
@@ -203,18 +210,20 @@ async function main(): Promise<void> {
       // eslint-disable-next-line no-console
       console.log(`pinakes — Pinakes CLI
 
-All project data is stored under ~/.pinakes/projects/<mangled-project-root>/.
+Project wiki lives at <project-root>/.pinakes/wiki/ (committed to git).
+Index data is stored under ~/.pinakes/projects/<mangled-project-root>/.
 Personal data is stored under ~/.pinakes/. Set PINAKES_ROOT to override.
 
 Usage:
-  pinakes serve   [--project-root <dir>] [--wiki-path <dir>] [--db-path <path>] [--profile-path <dir>] [--profile-db-path <path>]
-  pinakes rebuild [--project-root <dir>] [--wiki-path <dir>] [--db-path <path>] [--scope project|personal|both]
-  pinakes status  [--project-root <dir>] [--db-path <path>] [--profile-db-path <path>]
-  pinakes audit   [--n <count>] [--scope project|personal] [--project-root <dir>] [--db-path <path>]
-  pinakes purge   --scope <project|personal> --confirm [--project-root <dir>] [--db-path <path>]
-  pinakes export  --scope <project|personal> [--out file.json] [--project-root <dir>] [--db-path <path>]
-  pinakes import  --scope <project|personal> --in file.json [--project-root <dir>] [--db-path <path>]
-  pinakes contradiction-scan [--scope project|personal] [--project-root <dir>] [--wiki-path <dir>] [--db-path <path>]`);
+  pinakes serve              [--project-root <dir>] [--db-path <path>] [--profile-path <dir>] [--profile-db-path <path>]
+  pinakes rebuild            [--project-root <dir>] [--db-path <path>] [--scope project|personal|both]
+  pinakes status             [--project-root <dir>] [--db-path <path>] [--profile-db-path <path>]
+  pinakes audit              [--n <count>] [--scope project|personal] [--project-root <dir>] [--db-path <path>]
+  pinakes audit-wiki         [--project-root <dir>] [--db-path <path>]
+  pinakes purge              --scope <project|personal> --confirm [--project-root <dir>] [--db-path <path>]
+  pinakes export             --scope <project|personal> [--out file.json] [--project-root <dir>] [--db-path <path>]
+  pinakes import             --scope <project|personal> --in file.json [--project-root <dir>] [--db-path <path>]
+  pinakes contradiction-scan [--scope project|personal] [--project-root <dir>] [--db-path <path>]`);
       break;
     }
 
