@@ -213,14 +213,12 @@ class ClaudeSubprocessProvider implements LlmProvider {
   }
 
   async complete(opts: { system: string; prompt: string; maxTokens: number }): Promise<string> {
-    return runSubprocess(this.binPath, [
-      '-p', opts.prompt,
-      '--bare',
-      '--tools', '',
+    return runSubprocessWithStdin(this.binPath, [
+      '--print',
       '--model', 'haiku',
       '--system-prompt', opts.system,
       '--output-format', 'text',
-    ]);
+    ], opts.prompt);
   }
 }
 
@@ -319,6 +317,23 @@ function runSubprocess(cmd: string, args: string[]): Promise<string> {
       resolve(stdout.trim());
     });
     // Close stdin immediately so `claude -p` doesn't wait for pipe input
+    child.stdin?.end();
+  });
+}
+
+/** Run a CLI tool with stdin input and return its stdout. Timeout: 60s. */
+function runSubprocessWithStdin(cmd: string, args: string[], stdin: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(cmd, args, { timeout: 60_000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        logger.warn({ err, cmd, stderr: stderr?.slice(0, 200) }, 'subprocess LLM call failed');
+        reject(new Error(`${cmd} failed: ${err.message}`));
+        return;
+      }
+      resolve(stdout.trim());
+    });
+    // Pipe the prompt via stdin to avoid shell argument escaping issues
+    child.stdin?.write(stdin);
     child.stdin?.end();
   });
 }

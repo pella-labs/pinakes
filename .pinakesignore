@@ -1,0 +1,9 @@
+# .pinakesignore — controls which repo .md files get copied into the wiki.
+# Uses .gitignore-style patterns. Built-in defaults already exclude common
+# source directories (src/, bin/, crates/, examples/, etc.).
+# Add project-specific patterns below.
+
+# To re-include a directory excluded by defaults, use negation:
+# !**/src/
+
+# Project-specific ignores:

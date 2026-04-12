@@ -1,0 +1,7 @@
+# Pinakes index files — NOT committed to git
+# The wiki/ directory IS committed (shared team knowledge)
+pinakes.db
+manifest.json
+audit.jsonl
+*.db-wal
+*.db-shm
