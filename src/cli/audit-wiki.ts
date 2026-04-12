@@ -58,35 +58,34 @@ export async function auditWikiCommand(opts: WikiAuditOptions): Promise<WikiAudi
   try {
     const llmProvider = createLlmProvider();
 
-    if (!llmProvider.available()) {
-      throw new Error(
-        'No LLM provider available for wiki audit. ' +
-          'Set PINAKES_OLLAMA_URL, ANTHROPIC_API_KEY, or OPENAI_API_KEY, ' +
-          'or install the claude/codex CLI.'
-      );
-    }
-
     // eslint-disable-next-line no-console
-    console.log(`Running wiki audit with ${llmProvider.name} provider...`);
+    console.log(`Running wiki audit (LLM provider: ${llmProvider.name})...`);
 
-    // 1. Contradiction scan
-    // eslint-disable-next-line no-console
-    console.log('  Scanning for contradictions...');
-    const contradictions = await contradictionScan({
-      bundle,
-      scope,
-      llmProvider,
-      wikiRoot: wikiPath,
-    });
-
-    if (contradictions.rate_limited) {
+    // 1. Contradiction scan (requires LLM provider)
+    let contradictions: ContradictionResult;
+    if (llmProvider.available()) {
       // eslint-disable-next-line no-console
-      console.log('  Contradiction scan rate-limited (last scan < 1h ago)');
+      console.log('  Scanning for contradictions...');
+      contradictions = await contradictionScan({
+        bundle,
+        scope,
+        llmProvider,
+        wikiRoot: wikiPath,
+      });
+
+      if (contradictions.rate_limited) {
+        // eslint-disable-next-line no-console
+        console.log('  Contradiction scan rate-limited (last scan < 1h ago)');
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(
+          `  Scanned ${contradictions.scanned_pairs} pairs, found ${contradictions.contradictions.length} contradictions`
+        );
+      }
     } else {
       // eslint-disable-next-line no-console
-      console.log(
-        `  Scanned ${contradictions.scanned_pairs} pairs, found ${contradictions.contradictions.length} contradictions`
-      );
+      console.log('  Skipping contradiction scan (no LLM provider available)');
+      contradictions = { scanned_pairs: 0, contradictions: [], rate_limited: false };
     }
 
     // 2. Gap detection — filter out noise (short tokens, common words, code fragments)
@@ -98,26 +97,11 @@ export async function auditWikiCommand(opts: WikiAuditOptions): Promise<WikiAudi
     // eslint-disable-next-line no-console
     console.log(`  Found ${gaps.length} gaps (${significantGaps.length} significant)`);
 
-    // 3. Generate stub pages for significant gaps
+    // 3. Stub page generation is deferred to the Pharos integration (Tier 2).
+    // The claude subprocess provider is too unreliable for batch generation,
+    // and the gap detector still produces too many false positives for
+    // automated page creation. The audit report lists gaps for manual review.
     const stubPages: string[] = [];
-    let llmCalls = contradictions.scanned_pairs;
-
-    if (significantGaps.length > 0 && llmCalls < MAX_LLM_CALLS) {
-      // eslint-disable-next-line no-console
-      console.log('  Generating stub pages for significant gaps...');
-      for (const gap of significantGaps) {
-        if (llmCalls >= MAX_LLM_CALLS) break;
-        try {
-          const stubPath = await generateStubPage(gap, wikiPath, llmProvider);
-          if (stubPath) {
-            stubPages.push(stubPath);
-            llmCalls++;
-          }
-        } catch (err) {
-          logger.warn({ err, topic: gap.topic }, 'failed to generate stub page');
-        }
-      }
-    }
 
     // 4. Generate audit report
     const reportPath = join(wikiPath, '_audit-report.md');
