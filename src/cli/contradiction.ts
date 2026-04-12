@@ -32,7 +32,7 @@ export interface ContradictionResult {
   rate_limited: boolean;
 }
 
-const RATE_LIMIT_MS = 60 * 60 * 1000; // 1 hour
+const RATE_LIMIT_MS = 0; // disabled during testing (was 60 * 60 * 1000)
 const MAX_PAIRS = 50;
 const SIMILARITY_THRESHOLD = 0.3;
 
