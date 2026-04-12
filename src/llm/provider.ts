@@ -220,7 +220,6 @@ class ClaudeSubprocessProvider implements LlmProvider {
       '--model', 'haiku',
       '--system-prompt', opts.system,
       '--output-format', 'text',
-      '--max-tokens', String(opts.maxTokens),
     ]);
   }
 }
