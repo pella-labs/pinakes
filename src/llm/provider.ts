@@ -1,4 +1,5 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { logger } from '../observability/logger.js';
 
 /**
@@ -287,7 +288,6 @@ function resolveCommand(name: string): string | false {
 
   // 1. Try PATH via `which`
   try {
-    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
     const resolved = execFileSync('which', [name], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
     if (resolved) {
       binaryCache.set(name, resolved);
@@ -296,7 +296,6 @@ function resolveCommand(name: string): string | false {
   } catch { /* not in PATH */ }
 
   // 2. Check common install locations (npx strips ~/.local/bin etc.)
-  const { existsSync } = require('node:fs') as typeof import('node:fs');
   for (const dir of COMMON_BIN_DIRS) {
     const candidate = `${dir}/${name}`;
     if (existsSync(candidate)) {

@@ -212,7 +212,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     `Use \`${executeToolName}\` for advanced operations: graph traversal, gap detection, writing new knowledge.`;
 
   const mcp = new McpServer(
-    { name: serverName, version: '0.3.8' },
+    { name: serverName, version: '0.3.9' },
     { capabilities: { tools: {} }, instructions }
   );
   mcp.registerTool(searchToolName, searchToolConfig, instrumentHandler(
