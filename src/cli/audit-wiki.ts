@@ -1,9 +1,9 @@
-import { existsSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { closeDb, openDb } from '../db/client.js';
 import { queryGaps, type GapRow } from '../gaps/detector.js';
-import { createLlmProvider, type LlmProvider } from '../llm/provider.js';
+import { createLlmProvider } from '../llm/provider.js';
 import { logger } from '../observability/logger.js';
 import {
   resolveAbs,
@@ -25,7 +25,6 @@ import { contradictionScan, type ContradictionResult } from './contradiction.js'
  * error message if no provider is available.
  */
 
-const MAX_LLM_CALLS = 50;
 const GAP_MENTION_THRESHOLD = 10;
 const MIN_TOPIC_LENGTH = 4; // filter out "or", "no", "id", etc.
 
@@ -124,35 +123,7 @@ export async function auditWikiCommand(opts: WikiAuditOptions): Promise<WikiAudi
 // Internals
 // ---------------------------------------------------------------------------
 
-async function generateStubPage(
-  gap: GapRow,
-  wikiRoot: string,
-  llmProvider: LlmProvider,
-): Promise<string | null> {
-  const slug = gap.topic
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
-
-  if (!slug) return null;
-
-  const filePath = join(wikiRoot, `${slug}.md`);
-
-  if (existsSync(filePath)) return null;
-
-  const content = await llmProvider.complete({
-    system:
-      'You are a technical documentation writer. Generate a concise markdown stub page for a documentation topic. ' +
-      'Include: a title (H1), a brief description, key questions to answer, and placeholder sections. ' +
-      'Keep it under 500 words. Output only the markdown content.',
-    prompt: `Generate a documentation stub for the topic: "${gap.topic}"\n\nThis topic has been referenced ${gap.mentions_count} times across the knowledge base but has no dedicated page.`,
-    maxTokens: 1000,
-  });
-
-  writeFileSync(filePath, content, 'utf-8');
-  logger.info({ topic: gap.topic, path: filePath }, 'generated stub page for gap');
-  return filePath;
-}
+// Stub page generation deferred to Pharos Tier 2 integration.
 
 function writeAuditReport(
   reportPath: string,
