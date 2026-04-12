@@ -310,7 +310,7 @@ function resolveCommand(name: string): string | false {
 /** Run a CLI tool and return its stdout. Timeout: 30s. */
 function runSubprocess(cmd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: 30_000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+    const child = execFile(cmd, args, { timeout: 30_000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         logger.warn({ err, cmd, stderr: stderr?.slice(0, 200) }, 'subprocess LLM call failed');
         reject(new Error(`${cmd} failed: ${err.message}`));
@@ -318,6 +318,8 @@ function runSubprocess(cmd: string, args: string[]): Promise<string> {
       }
       resolve(stdout.trim());
     });
+    // Close stdin immediately so `claude -p` doesn't wait for pipe input
+    child.stdin?.end();
   });
 }
 

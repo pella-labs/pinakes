@@ -26,7 +26,8 @@ import { contradictionScan, type ContradictionResult } from './contradiction.js'
  */
 
 const MAX_LLM_CALLS = 50;
-const GAP_MENTION_THRESHOLD = 3;
+const GAP_MENTION_THRESHOLD = 10;
+const MIN_TOPIC_LENGTH = 4; // filter out "or", "no", "id", etc.
 
 export interface WikiAuditOptions {
   projectRoot?: string;
@@ -88,10 +89,11 @@ export async function auditWikiCommand(opts: WikiAuditOptions): Promise<WikiAudi
       );
     }
 
-    // 2. Gap detection
+    // 2. Gap detection — filter out noise (short tokens, common words, code fragments)
     // eslint-disable-next-line no-console
     console.log('  Checking for documentation gaps...');
-    const gaps = queryGaps(bundle.writer, scope);
+    const allGaps = queryGaps(bundle.writer, scope);
+    const gaps = allGaps.filter((g) => isRealGap(g.topic));
     const significantGaps = gaps.filter((g) => g.mentions_count >= GAP_MENTION_THRESHOLD);
     // eslint-disable-next-line no-console
     console.log(`  Found ${gaps.length} gaps (${significantGaps.length} significant)`);
@@ -235,4 +237,38 @@ function writeAuditReport(
 function truncate(s: string, maxLen: number): string {
   if (s.length <= maxLen) return s;
   return s.slice(0, maxLen) + '...';
+}
+
+/**
+ * Filter out noise from the gap detector. Rejects topics that are:
+ * - Too short (common tokens like "or", "no", "id")
+ * - Pure code fragments (paths, URLs, variable names with underscores)
+ * - Common stopwords
+ */
+function isRealGap(topic: string): boolean {
+  if (topic.length < MIN_TOPIC_LENGTH) return false;
+
+  // Skip URLs, file paths, code fragments
+  if (topic.startsWith('http') || topic.startsWith('/') || topic.startsWith('.')) return false;
+  if (topic.includes('://')) return false;
+
+  // Skip things that look like code (snake_case with no spaces, camelCase identifiers)
+  if (/^[a-z_]+$/.test(topic) && topic.includes('_') && !topic.includes(' ')) return false;
+
+  // Skip common stopwords that aren't real topics
+  const stopwords = new Set([
+    'the', 'and', 'for', 'with', 'that', 'this', 'from', 'are', 'was', 'will',
+    'can', 'not', 'but', 'all', 'has', 'have', 'had', 'been', 'would', 'could',
+    'should', 'may', 'might', 'must', 'shall', 'into', 'than', 'then', 'when',
+    'where', 'which', 'while', 'about', 'after', 'before', 'between', 'under',
+    'over', 'only', 'also', 'just', 'like', 'more', 'most', 'some', 'such',
+    'each', 'every', 'both', 'either', 'neither', 'other', 'another',
+    'true', 'false', 'null', 'none', 'yes', 'done',
+  ]);
+  if (stopwords.has(topic.toLowerCase())) return false;
+
+  // Skip single-word topics that are too generic
+  if (!topic.includes(' ') && topic.length < 6) return false;
+
+  return true;
 }
