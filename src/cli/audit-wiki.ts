@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { closeDb, openDb } from '../db/client.js';
 import { queryGaps, type GapRow } from '../gaps/detector.js';
 import { createLlmProvider } from '../llm/provider.js';
-import { logger } from '../observability/logger.js';
 import {
   resolveAbs,
   projectWikiPath as defaultProjectWikiPath,
