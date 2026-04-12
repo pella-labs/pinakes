@@ -47,28 +47,27 @@ export class RepoMirrorWatcher {
   async start(): Promise<void> {
     if (this.watcher) throw new Error('RepoMirrorWatcher.start called twice');
 
+    // Note: chokidar 4.x removed glob support for `ignored`. We filter
+    // in the event handlers instead, matching the pattern used by
+    // ChokidarWatcher (see chokidar.ts comment about this).
     this.watcher = chokidar.watch(this.projectRoot, {
-      ignoreInitial: true, // Don't mirror on startup — auto-seed already handled that
+      ignoreInitial: true,
       awaitWriteFinish: false,
-      ignored: [
-        '**/node_modules/**',
-        '**/.git/**',
-        '**/.pinakes/**',
-        '**/dist/**',
-        '**/build/**',
-        '**/coverage/**',
-        '**/.next/**',
-        '**/.nuxt/**',
-        '**/vendor/**',
-        '**/__pycache__/**',
-        '**/.tox/**',
-        '**/target/**',
-      ],
     });
+
+    const SKIP_DIRS = new Set([
+      'node_modules', '.git', '.pinakes', 'dist', 'build', 'coverage',
+      '.next', '.nuxt', 'vendor', '__pycache__', '.tox', 'target',
+    ]);
 
     const shouldMirror = (path: string): boolean => {
       if (!path.toLowerCase().endsWith('.md')) return false;
       const rel = relative(this.projectRoot, resolve(path));
+      // Skip files under excluded directories
+      const segments = rel.split('/');
+      for (const seg of segments.slice(0, -1)) {
+        if (SKIP_DIRS.has(seg)) return false;
+      }
       return !shouldIgnore(rel, this.ignorePatterns);
     };
 

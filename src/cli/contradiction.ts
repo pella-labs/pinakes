@@ -1,3 +1,6 @@
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import type { DbBundle } from '../db/client.js';
 import type { LlmProvider } from '../llm/provider.js';
 import { logger } from '../observability/logger.js';
@@ -215,8 +218,7 @@ function writeContradictionReport(
   bundle: DbBundle,
   scope: string
 ): void {
-  const { writeFileSync } = require('node:fs') as typeof import('node:fs');
-  const { join } = require('node:path') as typeof import('node:path');
+  // writeFileSync and join imported at top level
 
   const lines = [
     '# Detected Contradictions',

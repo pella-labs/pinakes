@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { closeDb, openDb } from '../db/client.js';
@@ -152,8 +152,6 @@ async function generateStubPage(
 
   const filePath = join(wikiRoot, `${slug}.md`);
 
-  // Don't overwrite existing pages
-  const { existsSync } = require('node:fs') as typeof import('node:fs');
   if (existsSync(filePath)) return null;
 
   const content = await llmProvider.complete({
