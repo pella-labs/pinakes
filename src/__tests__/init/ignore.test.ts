@@ -98,6 +98,14 @@ describe('init/ignore', () => {
       expect(shouldIgnore('docs/CHANGELOG.md', patterns)).toBe(true);
     });
 
+    it('bare name matches as directory prefix too', () => {
+      writeFileSync(join(tmp, '.pinakesignore'), 'oidc-proxy\n');
+      const patterns = loadIgnorePatterns(tmp);
+      expect(shouldIgnore('oidc-proxy/README.md', patterns)).toBe(true);
+      expect(shouldIgnore('some/nested/oidc-proxy/README.md', patterns)).toBe(true);
+      expect(shouldIgnore('README.md', patterns)).toBe(false);
+    });
+
     it('supports extension matching', () => {
       writeFileSync(join(tmp, '.pinakesignore'), '*.draft.md\n');
       const patterns = loadIgnorePatterns(tmp);

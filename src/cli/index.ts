@@ -2,6 +2,11 @@
 import { auditCommand, renderAudit } from './audit.js';
 import { auditWikiCommand } from './audit-wiki.js';
 import { contradictionScanCommand } from './contradiction-cli.js';
+import { loadIgnorePatterns, cleanIgnoredFromWiki } from '../init/ignore.js';
+import {
+  resolveAbs,
+  projectWikiPath as defaultProjectWikiPath,
+} from '../paths.js';
 import { exportCommand, renderExport } from './export.js';
 import { importCommand, renderImport } from './import.js';
 import { purgeCommand, renderPurge } from './purge.js';
@@ -135,6 +140,16 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'clean-wiki': {
+      const projectRoot = resolveAbs(getString(flags, 'project-root') ?? process.cwd());
+      const wikiRoot = defaultProjectWikiPath(projectRoot);
+      const patterns = loadIgnorePatterns(projectRoot);
+      const removed = cleanIgnoredFromWiki(projectRoot, wikiRoot, patterns);
+      // eslint-disable-next-line no-console
+      console.log(`Removed ${removed} ignored file(s) from wiki.`);
+      break;
+    }
+
     case 'purge': {
       const scope = getRequiredString(flags, 'scope') as 'project' | 'personal';
       const result = purgeCommand({
@@ -220,6 +235,7 @@ Usage:
   pinakes status             [--project-root <dir>] [--db-path <path>] [--profile-db-path <path>]
   pinakes audit              [--n <count>] [--scope project|personal] [--project-root <dir>] [--db-path <path>]
   pinakes audit-wiki         [--project-root <dir>] [--db-path <path>]
+  pinakes clean-wiki         [--project-root <dir>]
   pinakes purge              --scope <project|personal> --confirm [--project-root <dir>] [--db-path <path>]
   pinakes export             --scope <project|personal> [--out file.json] [--project-root <dir>] [--db-path <path>]
   pinakes import             --scope <project|personal> --in file.json [--project-root <dir>] [--db-path <path>]

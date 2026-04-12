@@ -220,9 +220,14 @@ function compilePattern(pattern: string): ((path: string) => boolean) | null {
     return (p) => p.endsWith(ext);
   }
 
-  // `filename` (no slashes, no wildcards) → basename match anywhere
+  // bare name (no slashes, no wildcards) → matches as basename OR directory prefix
+  // e.g. "oidc-proxy" matches both "oidc-proxy/README.md" and "path/to/oidc-proxy"
   if (!pattern.includes('/') && !pattern.includes('*')) {
-    return (p) => basename(p) === pattern;
+    return (p) => {
+      if (basename(p) === pattern) return true;
+      const segments = p.split('/');
+      return segments.slice(0, -1).includes(pattern);
+    };
   }
 
   // `dir/subdir/` → prefix match
