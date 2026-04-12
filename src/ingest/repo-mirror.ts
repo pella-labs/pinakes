@@ -3,6 +3,7 @@ import { dirname, relative, resolve } from 'node:path';
 
 import chokidar, { type FSWatcher } from 'chokidar';
 
+import { loadIgnorePatterns, shouldIgnore, type IgnorePattern } from '../init/ignore.js';
 import { logger } from '../observability/logger.js';
 
 /**
@@ -35,10 +36,12 @@ export class RepoMirrorWatcher {
   private pending: Map<string, PendingMirror> = new Map();
   private readonly projectRoot: string;
   private readonly wikiRoot: string;
+  private readonly ignorePatterns: IgnorePattern[];
 
   constructor(opts: RepoMirrorOptions) {
     this.projectRoot = resolve(opts.projectRoot);
     this.wikiRoot = resolve(opts.wikiRoot);
+    this.ignorePatterns = loadIgnorePatterns(this.projectRoot);
   }
 
   async start(): Promise<void> {
@@ -63,16 +66,20 @@ export class RepoMirrorWatcher {
       ],
     });
 
-    const isMarkdown = (path: string): boolean => path.toLowerCase().endsWith('.md');
+    const shouldMirror = (path: string): boolean => {
+      if (!path.toLowerCase().endsWith('.md')) return false;
+      const rel = relative(this.projectRoot, resolve(path));
+      return !shouldIgnore(rel, this.ignorePatterns);
+    };
 
     this.watcher.on('add', (path) => {
-      if (isMarkdown(path)) this.queueMirror('copy', path);
+      if (shouldMirror(path)) this.queueMirror('copy', path);
     });
     this.watcher.on('change', (path) => {
-      if (isMarkdown(path)) this.queueMirror('copy', path);
+      if (shouldMirror(path)) this.queueMirror('copy', path);
     });
     this.watcher.on('unlink', (path) => {
-      if (isMarkdown(path)) this.queueMirror('remove', path);
+      if (shouldMirror(path)) this.queueMirror('remove', path);
     });
     this.watcher.on('error', (err) => {
       logger.error({ err }, 'repo mirror watcher error');

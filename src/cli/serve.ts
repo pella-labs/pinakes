@@ -12,6 +12,7 @@ import { ChokidarWatcher } from '../ingest/chokidar.js';
 import { RepoMirrorWatcher } from '../ingest/repo-mirror.js';
 import { scanRepoMarkdownFiles } from '../init/scanner.js';
 import { copyMarkdownToWiki } from '../init/copy.js';
+import { ensurePinakesIgnoreFile, loadIgnorePatterns, cleanIgnoredFromWiki } from '../init/ignore.js';
 import { IngesterService } from '../ingest/ingester.js';
 import { checkConsistency, listMarkdownFiles } from '../ingest/manifest.js';
 import { executeToolConfig, makeExecuteHandler } from '../mcp/tools/execute.js';
@@ -81,8 +82,9 @@ interface ServerHandle {
 export async function buildServer(options: ServeOptions): Promise<ServerHandle> {
   const projectRoot = resolveAbs(options.projectRoot ?? process.cwd());
 
-  // Ensure .pinakes/.gitignore exists before any wiki operations
+  // Ensure .pinakes/.gitignore and .pinakesignore exist before any wiki operations
   ensurePinakesGitignore(projectRoot);
+  ensurePinakesIgnoreFile(projectRoot);
 
   // Migrate wiki from old centralized location to in-repo path
   migrateLegacyWikiToInRepo(projectRoot);
@@ -157,6 +159,24 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     wikiRoot: projectWiki,
   });
   await repoMirror.start();
+
+  // Step 5c: watch .pinakesignore for changes — clean wiki on update
+  const pinakesIgnorePath = resolve(projectRoot, '.pinakesignore');
+  let ignoreWatcher: import('chokidar').FSWatcher | null = null;
+  try {
+    const chokidarMod = await import('chokidar');
+    ignoreWatcher = chokidarMod.default.watch(pinakesIgnorePath, { ignoreInitial: true });
+    ignoreWatcher.on('change', () => {
+      logger.info('.pinakesignore changed — cleaning ignored files from wiki');
+      const patterns = loadIgnorePatterns(projectRoot);
+      const removed = cleanIgnoredFromWiki(projectRoot, projectWiki, patterns);
+      if (removed > 0) {
+        logger.info({ removed }, 'cleaned ignored files from wiki');
+      }
+    });
+  } catch (err) {
+    logger.warn({ err }, 'failed to watch .pinakesignore');
+  }
 
   // Step 6: build the MCP server
   const repository = new Repository(projectBundle, personalBundle);
@@ -273,6 +293,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     logger.info({ signal }, 'pinakes shutting down');
     try {
       clearInterval(healthCheckTimer);
+      if (ignoreWatcher) await ignoreWatcher.close();
       await repoMirror.stop();
       await projectWatcher.stop();
       if (personalWatcher) await personalWatcher.stop();

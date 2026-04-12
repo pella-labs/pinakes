@@ -1,24 +1,46 @@
 import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 
 import { logger } from '../observability/logger.js';
+import { loadIgnorePatterns, shouldIgnore } from './ignore.js';
 
 /**
- * Scan a project directory for markdown files, respecting .gitignore.
+ * Scan a project directory for markdown files, respecting .gitignore
+ * and `.pinakesignore`.
  *
  * Primary strategy: `git ls-files` (fast, respects .gitignore).
  * Fallback: recursive walk with hardcoded excludes (non-git repos).
+ * Both paths filter results through `.pinakesignore` + built-in defaults.
  *
  * Returns absolute paths, sorted deterministically.
  */
 export function scanRepoMarkdownFiles(projectRoot: string): string[] {
+  const absRoot = resolve(projectRoot);
+  const patterns = loadIgnorePatterns(absRoot);
+
+  let files: string[];
   try {
-    return scanViaGit(projectRoot);
+    files = scanViaGit(absRoot);
   } catch {
     logger.debug({ projectRoot }, 'git ls-files failed, falling back to recursive walk');
-    return scanViaWalk(projectRoot);
+    files = scanViaWalk(absRoot);
   }
+
+  // Apply .pinakesignore filtering
+  const filtered = files.filter((absPath) => {
+    const rel = relative(absRoot, absPath);
+    return !shouldIgnore(rel, patterns);
+  });
+
+  if (filtered.length < files.length) {
+    logger.info(
+      { total: files.length, kept: filtered.length, ignored: files.length - filtered.length },
+      '.pinakesignore: filtered repo markdown files'
+    );
+  }
+
+  return filtered;
 }
 
 // ---------------------------------------------------------------------------
