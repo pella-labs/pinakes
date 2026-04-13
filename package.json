@@ -1,10 +1,10 @@
 {
   "name": "@pella-labs/pinakes",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Local stdio MCP server that indexes a Karpathy-style two-level knowledge wiki into SQLite and exposes it to a coding LLM via Cloudflare-style code-mode.",
   "type": "module",
   "bin": {
-    "pinakes": "./dist/cli/index.js"
+    "pinakes": "dist/cli/index.js"
   },
   "files": [
     "dist"
