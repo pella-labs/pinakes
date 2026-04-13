@@ -319,11 +319,11 @@ export class IngesterService {
 
       // Insert new nodes
       const insertNode = w.prepare(
-        `INSERT INTO pinakes_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at, confidence, confidence_score)
+        `INSERT OR REPLACE INTO pinakes_nodes (id, scope, source_uri, section_path, kind, title, content, source_sha, token_count, created_at, updated_at, last_accessed_at, confidence, confidence_score)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       const insertChunk = w.prepare(
-        `INSERT INTO pinakes_chunks (id, node_id, chunk_index, text, chunk_sha, token_count, created_at)
+        `INSERT OR REPLACE INTO pinakes_chunks (id, node_id, chunk_index, text, chunk_sha, token_count, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
       );
       const insertVec = w.prepare(

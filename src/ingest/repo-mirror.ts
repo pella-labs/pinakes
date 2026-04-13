@@ -47,18 +47,22 @@ export class RepoMirrorWatcher {
   async start(): Promise<void> {
     if (this.watcher) throw new Error('RepoMirrorWatcher.start called twice');
 
-    // Note: chokidar 4.x removed glob support for `ignored`. We filter
-    // in the event handlers instead, matching the pattern used by
-    // ChokidarWatcher (see chokidar.ts comment about this).
-    this.watcher = chokidar.watch(this.projectRoot, {
-      ignoreInitial: true,
-      awaitWriteFinish: false,
-    });
-
     const SKIP_DIRS = new Set([
       'node_modules', '.git', '.pinakes', 'dist', 'build', 'coverage',
       '.next', '.nuxt', 'vendor', '__pycache__', '.tox', 'target',
     ]);
+
+    // chokidar 4.x supports function-based `ignored` to prevent watching
+    // directories that will never contain mirrored .md files. This avoids
+    // EMFILE errors on large repos with thousands of node_modules dirs.
+    this.watcher = chokidar.watch(this.projectRoot, {
+      ignoreInitial: true,
+      awaitWriteFinish: false,
+      ignored: (path: string) => {
+        const base = path.split('/').pop() ?? '';
+        return SKIP_DIRS.has(base);
+      },
+    });
 
     const shouldMirror = (path: string): boolean => {
       if (!path.toLowerCase().endsWith('.md')) return false;
