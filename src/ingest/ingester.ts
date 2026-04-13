@@ -327,7 +327,7 @@ export class IngesterService {
          VALUES (?, ?, ?, ?, ?, ?, ?)`
       );
       const insertVec = w.prepare(
-        'INSERT INTO pinakes_chunks_vec(rowid, embedding) VALUES (?, ?)'
+        'INSERT OR REPLACE INTO pinakes_chunks_vec(rowid, embedding) VALUES (?, ?)'
       );
 
       for (const node of planned) {
