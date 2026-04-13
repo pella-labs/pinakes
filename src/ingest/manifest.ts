@@ -193,6 +193,8 @@ export function listMarkdownFiles(rootDir: string): string[] {
       continue;
     }
     for (const name of entries) {
+      // Skip directories that should never be wiki content
+      if (name === 'node_modules' || name === '.git' || name === 'dist' || name === 'build') continue;
       const full = join(dir, name);
       let st;
       try {
