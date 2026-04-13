@@ -1,5 +1,7 @@
-import { existsSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+
+import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 
 import { closeDb, openDb } from '../db/client.js';
 import { queryGaps, type GapRow } from '../gaps/detector.js';
@@ -12,6 +14,7 @@ import {
   personalDbPath as defaultPersonalDbPath,
 } from '../paths.js';
 import { contradictionScan, type ContradictionResult } from './contradiction.js';
+import { createProgressReporter } from './progress.js';
 
 /**
  * `pinakes audit-wiki` — LLM-powered wiki audit command.
@@ -25,18 +28,21 @@ import { contradictionScan, type ContradictionResult } from './contradiction.js'
  */
 
 const GAP_MENTION_THRESHOLD = 10;
-const MIN_TOPIC_LENGTH = 4; // filter out "or", "no", "id", etc.
+const MIN_TOPIC_LENGTH = 5; // filter out short tokens (D42 tightened from 4)
 
 export interface WikiAuditOptions {
   projectRoot?: string;
   dbPath?: string;
   scope?: 'project' | 'personal';
+  quiet?: boolean;
+  generateStubs?: boolean;
 }
 
 export interface WikiAuditResult {
   contradictions: ContradictionResult;
   gaps_found: number;
-  stub_pages_created: string[];
+  topology_gaps: number;
+  stubs_generated: number;
   audit_report_path: string;
 }
 
@@ -55,6 +61,7 @@ export async function auditWikiCommand(opts: WikiAuditOptions): Promise<WikiAudi
   const bundle = openDb(dbPath);
   try {
     const llmProvider = createLlmProvider();
+    const progress = createProgressReporter({ quiet: opts.quiet });
 
     // eslint-disable-next-line no-console
     console.log(`Running wiki audit (LLM provider: ${llmProvider.name})...`);
@@ -62,8 +69,7 @@ export async function auditWikiCommand(opts: WikiAuditOptions): Promise<WikiAudi
     // 1. Contradiction scan (requires LLM provider)
     let contradictions: ContradictionResult;
     if (llmProvider.available()) {
-      // eslint-disable-next-line no-console
-      console.log('  Scanning for contradictions...');
+      progress.startPhase('Phase 1/3: Scanning for contradictions', 1);
       contradictions = await contradictionScan({
         bundle,
         scope,
@@ -72,63 +78,67 @@ export async function auditWikiCommand(opts: WikiAuditOptions): Promise<WikiAudi
       });
 
       if (contradictions.rate_limited) {
-        // eslint-disable-next-line no-console
-        console.log('  Contradiction scan rate-limited (last scan < 1h ago)');
+        progress.endPhase('Rate-limited (last scan < 1h ago)');
       } else {
-        // eslint-disable-next-line no-console
-        console.log(
-          `  Scanned ${contradictions.scanned_pairs} pairs, found ${contradictions.contradictions.length} contradictions`
+        progress.endPhase(
+          `Scanned ${contradictions.scanned_pairs} pairs, found ${contradictions.contradictions.length} contradictions`
         );
       }
     } else {
-      // eslint-disable-next-line no-console
-      console.log('  Skipping contradiction scan (no LLM provider available)');
-      contradictions = { scanned_pairs: 0, contradictions: [], rate_limited: false };
+      progress.startPhase('Phase 1/3: Contradiction scan', 0);
+      progress.endPhase('Skipped (no LLM provider available)');
+      contradictions = { scanned_pairs: 0, topics_scanned: 0, claims_extracted: 0, contradictions: [], rate_limited: false };
     }
 
-    // 2. Gap detection — filter out noise (short tokens, common words, code fragments)
-    // eslint-disable-next-line no-console
-    console.log('  Checking for documentation gaps...');
+    // 2. Gap detection — syntactic filter + LLM filter + graph topology (D42)
     const allGaps = queryGaps(bundle.writer, scope);
-    const gaps = allGaps.filter((g) => isRealGap(g.topic));
-    const significantGaps = gaps.filter((g) => g.mentions_count >= GAP_MENTION_THRESHOLD);
-    // eslint-disable-next-line no-console
-    console.log(`  Found ${gaps.length} gaps (${significantGaps.length} significant)`);
+    const syntacticGaps = allGaps.filter((g) => isRealGap(g.topic));
+    const significantGaps = syntacticGaps.filter((g) => g.mentions_count >= GAP_MENTION_THRESHOLD);
 
-    // 3. Generate stub pages for significant gaps (if LLM available)
-    const stubPages: string[] = [];
-    if (significantGaps.length > 0 && llmProvider.available()) {
-      // eslint-disable-next-line no-console
-      console.log('  Generating stub pages for significant gaps...');
-      const MAX_STUBS = 20;
-      let generated = 0;
-      for (const gap of significantGaps) {
-        if (generated >= MAX_STUBS) break;
-        try {
-          const stubPath = await generateStubPage(gap, wikiPath, llmProvider);
-          if (stubPath) {
-            stubPages.push(stubPath);
-            generated++;
-            // eslint-disable-next-line no-console
-            console.log(`    Created: ${stubPath.split('/').pop()}`);
-          }
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.log(`    Failed: ${gap.topic} — ${err instanceof Error ? err.message.slice(0, 80) : err}`);
-        }
-      }
+    progress.startPhase('Phase 2/3: Filtering documentation gaps', allGaps.length);
+
+    // LLM batch filter (Tier 2)
+    let filteredGaps: GapRow[];
+    if (llmProvider.available() && significantGaps.length > 0) {
+      filteredGaps = await llmFilterGaps(significantGaps, llmProvider, progress);
+    } else {
+      filteredGaps = significantGaps;
     }
 
-    // 4. Generate audit report
+    // Add graph topology gaps (high in-degree, no dedicated page)
+    const topoGaps = findTopologyGaps(bundle.writer, scope);
+
+    progress.endPhase(
+      `${allGaps.length} raw → ${syntacticGaps.length} syntactic → ${filteredGaps.length} LLM-filtered, ${topoGaps.length} topology gaps`
+    );
+
+    // 3. Gather context for each confirmed gap
+    const gapContexts = gatherGapContexts(bundle.writer, scope, filteredGaps);
+
+    // 4. Opt-in synthesis stubs (D43 — --generate-stubs flag)
+    let stubsGenerated = 0;
+    if (opts.generateStubs && filteredGaps.length > 0 && llmProvider.available()) {
+      stubsGenerated = await generateSynthesisStubs(
+        filteredGaps,
+        gapContexts,
+        wikiPath,
+        llmProvider,
+        progress,
+      );
+    }
+
+    // 5. Generate audit report (D46 restructured: contradictions, gaps, health)
+    const healthMetrics = getHealthMetrics(bundle.writer, scope);
     const reportPath = join(wikiPath, '_audit-report.md');
-    writeAuditReport(reportPath, contradictions, gaps, significantGaps, stubPages);
+    writeAuditReport(reportPath, contradictions, filteredGaps, topoGaps, gapContexts, healthMetrics, stubsGenerated);
     // eslint-disable-next-line no-console
     console.log(`\nAudit report written to: ${reportPath}`);
 
     return {
       contradictions,
-      gaps_found: gaps.length,
-      stub_pages_created: stubPages,
+      gaps_found: filteredGaps.length,
+      topology_gaps: topoGaps.length,
+      stubs_generated: stubsGenerated,
       audit_report_path: reportPath,
     };
   } finally {
@@ -137,95 +147,375 @@ export async function auditWikiCommand(opts: WikiAuditOptions): Promise<WikiAudi
 }
 
 // ---------------------------------------------------------------------------
-// Internals
+// LLM gap filtering (D42 Tier 2)
 // ---------------------------------------------------------------------------
 
-async function generateStubPage(
-  gap: GapRow,
+const GAP_FILTER_SYSTEM = `You are a documentation quality analyst. Given a list of terms extracted from a technical wiki, identify which represent real documentation topics that would benefit from a dedicated wiki page.
+
+Return ONLY a JSON array of the real topics: ["topic1", "topic2", ...]
+
+Filter out:
+- Common words and generic technical terms
+- Code syntax, variable names, file extensions
+- Terms too specific or too vague to be standalone pages
+- Terms that are part of larger concepts already documented`;
+
+const LLM_FILTER_BATCH_SIZE = 50;
+
+export async function llmFilterGaps(
+  gaps: GapRow[],
+  llmProvider: LlmProvider,
+  progress?: { tick: (label: string, detail?: string) => void },
+): Promise<GapRow[]> {
+  const result: GapRow[] = [];
+
+  for (let i = 0; i < gaps.length; i += LLM_FILTER_BATCH_SIZE) {
+    const batch = gaps.slice(i, i + LLM_FILTER_BATCH_SIZE);
+    const topics = batch.map((g) => g.topic);
+
+    try {
+      const response = await llmProvider.complete({
+        system: GAP_FILTER_SYSTEM,
+        prompt: `Filter these ${topics.length} terms:\n${JSON.stringify(topics)}`,
+        maxTokens: 1000,
+      });
+
+      const kept = parseLlmFilterResponse(response);
+      const keptSet = new Set(kept.map((t) => t.toLowerCase()));
+
+      for (const gap of batch) {
+        if (keptSet.has(gap.topic.toLowerCase())) {
+          result.push(gap);
+        }
+      }
+
+      progress?.tick(`batch ${Math.floor(i / LLM_FILTER_BATCH_SIZE) + 1}`, `${kept.length}/${batch.length} kept`);
+    } catch {
+      // LLM filter failed — keep all gaps in this batch (graceful degradation)
+      result.push(...batch);
+      progress?.tick(`batch ${Math.floor(i / LLM_FILTER_BATCH_SIZE) + 1}`, 'LLM filter failed, keeping all');
+    }
+  }
+
+  return result;
+}
+
+export function parseLlmFilterResponse(response: string): string[] {
+  try {
+    const fenceMatch = response.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+    const jsonStr = fenceMatch ? fenceMatch[1]! : response;
+    const arrMatch = jsonStr.match(/\[[\s\S]*\]/);
+    if (!arrMatch) return [];
+    const parsed = JSON.parse(arrMatch[0]) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((t): t is string => typeof t === 'string');
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Graph topology gaps (D42)
+// ---------------------------------------------------------------------------
+
+export interface TopologyGap {
+  topic: string;
+  in_degree: number;
+  source: 'graph-topology';
+}
+
+export function findTopologyGaps(
+  reader: BetterSqliteDatabase,
+  scope: string,
+): TopologyGap[] {
+  // Find nodes referenced by wikilink edges that don't have their own page
+  // We look for edge targets (dst_id) that appear frequently but
+  // whose corresponding node titles don't exist as dedicated pages
+  try {
+    const rows = reader
+      .prepare<[string, string], { title: string; cnt: number }>(
+        `SELECT n.title, COUNT(*) as cnt
+         FROM pinakes_edges e
+         JOIN pinakes_nodes n ON e.dst_id = n.id
+         WHERE n.scope = ? AND e.edge_kind = ?
+         GROUP BY n.title
+         HAVING cnt >= 3
+         ORDER BY cnt DESC
+         LIMIT 20`,
+      )
+      .all(scope, 'wikilink');
+
+    return rows.map((r) => ({
+      topic: r.title ?? 'untitled',
+      in_degree: r.cnt,
+      source: 'graph-topology' as const,
+    }));
+  } catch {
+    return []; // Table might not have edges yet
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Gap context gathering
+// ---------------------------------------------------------------------------
+
+export interface GapContext {
+  topic: string;
+  mentions: Array<{ source_uri: string; excerpt: string }>;
+}
+
+export function gatherGapContexts(
+  reader: BetterSqliteDatabase,
+  scope: string,
+  gaps: GapRow[],
+): GapContext[] {
+  const contexts: GapContext[] = [];
+
+  for (const gap of gaps.slice(0, 20)) {
+    try {
+      const mentions = reader
+        .prepare<[string, string], { source_uri: string; text: string }>(
+          `SELECT n.source_uri, c.text
+           FROM pinakes_chunks c
+           JOIN pinakes_nodes n ON c.node_id = n.id
+           WHERE n.scope = ? AND c.text LIKE '%' || ? || '%' COLLATE NOCASE
+           LIMIT 5`,
+        )
+        .all(scope, gap.topic);
+
+      contexts.push({
+        topic: gap.topic,
+        mentions: mentions.map((m) => ({
+          source_uri: m.source_uri,
+          excerpt: truncate(m.text, 200),
+        })),
+      });
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  return contexts;
+}
+
+// ---------------------------------------------------------------------------
+// Synthesis stubs (D43 — opt-in via --generate-stubs)
+// ---------------------------------------------------------------------------
+
+const SYNTHESIS_SYSTEM = `You are a technical documentation writer. Based on the following excerpts from a knowledge wiki, write a concise wiki page about the given topic.
+
+Rules:
+- Include ONLY facts present in the excerpts
+- Mark any inferences with "(inferred)"
+- Format as markdown with a title (H1), summary paragraph, and relevant details
+- Keep it under 500 words
+- Output only the markdown content`;
+
+export async function generateSynthesisStubs(
+  gaps: GapRow[],
+  contexts: GapContext[],
   wikiRoot: string,
   llmProvider: LlmProvider,
-): Promise<string | null> {
-  const slug = gap.topic
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
+  progress?: ReturnType<typeof createProgressReporter>,
+): Promise<number> {
+  const draftsDir = resolve(wikiRoot, '_audit-drafts');
+  mkdirSync(draftsDir, { recursive: true });
 
-  if (!slug) return null;
+  // Ensure _audit-drafts is gitignored
+  ensureGitignored(wikiRoot, '_audit-drafts/');
 
-  const filePath = join(wikiRoot, `${slug}.md`);
-  if (existsSync(filePath)) return null;
+  const MAX_STUBS = 20;
+  const toGenerate = gaps.slice(0, MAX_STUBS);
+  progress?.startPhase('Phase 3/3: Generating synthesis drafts', toGenerate.length);
 
-  const content = await llmProvider.complete({
-    system:
-      'You are a technical documentation writer. Generate a concise markdown stub page for a documentation topic. ' +
-      'Include: a title (H1), a brief description, key questions to answer, and placeholder sections. ' +
-      'Keep it under 500 words. Output only the markdown content.',
-    prompt: `Generate a documentation stub for the topic: "${gap.topic}"\n\nThis topic has been referenced ${gap.mentions_count} times across the knowledge base but has no dedicated page.`,
-    maxTokens: 1000,
-  });
+  let generated = 0;
+  for (const gap of toGenerate) {
+    const ctx = contexts.find((c) => c.topic === gap.topic);
+    if (!ctx || ctx.mentions.length === 0) {
+      progress?.tick(gap.topic, 'skipped (no context)');
+      continue;
+    }
 
-  writeFileSync(filePath, content, 'utf-8');
-  return filePath;
+    const slug = gap.topic
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+
+    if (!slug) {
+      progress?.tick(gap.topic, 'skipped (invalid slug)');
+      continue;
+    }
+
+    const filePath = join(draftsDir, `${slug}.md`);
+
+    try {
+      const excerpts = ctx.mentions
+        .map((m) => `From ${m.source_uri}:\n${m.excerpt}`)
+        .join('\n\n');
+
+      const content = await llmProvider.complete({
+        system: SYNTHESIS_SYSTEM,
+        prompt: `Write a wiki page about "${gap.topic}" based on these excerpts:\n\n${excerpts}`,
+        maxTokens: 1000,
+      });
+
+      writeFileSync(filePath, content, 'utf-8');
+      generated++;
+      progress?.tick(gap.topic, 'draft created');
+    } catch (err) {
+      progress?.tick(gap.topic, `failed: ${err instanceof Error ? err.message.slice(0, 60) : err}`);
+    }
+  }
+
+  progress?.endPhase(`${generated} drafts written to _audit-drafts/`);
+  return generated;
 }
+
+function ensureGitignored(wikiRoot: string, entry: string): void {
+  // Look for .gitignore in the .pinakes parent directory
+  const pinakesDir = resolve(wikiRoot, '..');
+  const gitignorePath = join(pinakesDir, '.gitignore');
+
+  if (!existsSync(gitignorePath)) return;
+
+  const content = readFileSync(gitignorePath, 'utf-8');
+  if (content.includes(entry)) return;
+
+  appendFileSync(gitignorePath, `\n${entry}\n`, 'utf-8');
+}
+
+// ---------------------------------------------------------------------------
+// Health metrics (D46)
+// ---------------------------------------------------------------------------
+
+export interface HealthMetrics {
+  file_count: number;
+  chunk_count: number;
+  node_count: number;
+  edge_count: number;
+}
+
+export function getHealthMetrics(
+  reader: BetterSqliteDatabase,
+  scope: string,
+): HealthMetrics {
+  const fileCount = reader.prepare<[string], { c: number }>(
+    `SELECT COUNT(DISTINCT source_uri) as c FROM pinakes_nodes WHERE scope = ?`,
+  ).get(scope)?.c ?? 0;
+
+  const chunkCount = reader.prepare<[string], { c: number }>(
+    `SELECT COUNT(*) as c FROM pinakes_chunks ch
+     JOIN pinakes_nodes n ON ch.node_id = n.id WHERE n.scope = ?`,
+  ).get(scope)?.c ?? 0;
+
+  const nodeCount = reader.prepare<[string], { c: number }>(
+    `SELECT COUNT(*) as c FROM pinakes_nodes WHERE scope = ?`,
+  ).get(scope)?.c ?? 0;
+
+  const edgeCount = reader.prepare<[string], { c: number }>(
+    `SELECT COUNT(*) as c FROM pinakes_edges e
+     JOIN pinakes_nodes n ON e.src_id = n.id WHERE n.scope = ?`,
+  ).get(scope)?.c ?? 0;
+
+  return { file_count: fileCount, chunk_count: chunkCount, node_count: nodeCount, edge_count: edgeCount };
+}
+
+// ---------------------------------------------------------------------------
+// Audit report (D46 restructured)
+// ---------------------------------------------------------------------------
 
 function writeAuditReport(
   reportPath: string,
   contradictions: ContradictionResult,
-  allGaps: GapRow[],
-  significantGaps: GapRow[],
-  stubPages: string[],
+  filteredGaps: GapRow[],
+  topoGaps: TopologyGap[],
+  gapContexts: GapContext[],
+  health: HealthMetrics,
+  stubsGenerated = 0,
 ): void {
   const lines = [
     '# Wiki Audit Report',
     '',
     `*Generated: ${new Date().toISOString()}*`,
     '',
-    '## Summary',
-    '',
   ];
 
-  if (contradictions.rate_limited) {
-    lines.push('- **Contradictions**: scan rate-limited (last scan < 1h ago)');
-  } else {
-    lines.push(`- **Contradictions**: ${contradictions.contradictions.length} found (${contradictions.scanned_pairs} pairs scanned)`);
-  }
-  lines.push(`- **Documentation gaps**: ${allGaps.length} total, ${significantGaps.length} significant (${GAP_MENTION_THRESHOLD}+ mentions)`);
-  lines.push(`- **Stub pages generated**: ${stubPages.length}`);
+  // Section 1: Contradictions
+  lines.push('## Contradictions');
   lines.push('');
-
-  if (contradictions.contradictions.length > 0) {
-    lines.push('## Contradictions');
+  if (contradictions.rate_limited) {
+    lines.push('*Scan rate-limited (last scan < 1h ago)*');
+  } else if (contradictions.contradictions.length === 0) {
+    lines.push(`*No contradictions found (${contradictions.topics_scanned} topics, ${contradictions.claims_extracted} claims scanned)*`);
+  } else {
+    lines.push(`**${contradictions.contradictions.length} contradictions found** (${contradictions.topics_scanned} topics scanned)`);
     lines.push('');
     for (const c of contradictions.contradictions) {
-      lines.push(`### ${c.chunkA.source_uri} vs ${c.chunkB.source_uri}`);
+      lines.push(`### ${c.topic}`);
       lines.push('');
-      lines.push(`- **Confidence**: ${c.confidence}`);
-      lines.push(`- **Explanation**: ${c.explanation}`);
-      lines.push(`- Chunk A: *"${truncate(c.chunkA.text, 150)}"*`);
-      lines.push(`- Chunk B: *"${truncate(c.chunkB.text, 150)}"*`);
+      lines.push(`- **${c.claimA.source_uri}**: "${truncate(c.claimA.claim, 150)}"`);
+      lines.push(`- **${c.claimB.source_uri}**: "${truncate(c.claimB.claim, 150)}"`);
+      lines.push(`- **Why**: ${c.explanation} *(${c.confidence} confidence)*`);
       lines.push('');
     }
   }
+  lines.push('');
 
-  if (significantGaps.length > 0) {
-    lines.push('## Documentation Gaps');
-    lines.push('');
-    lines.push('| Topic | Mentions | Status |');
-    lines.push('|---|---|---|');
-    for (const g of significantGaps) {
-      const status = g.resolved_at ? 'Resolved' : 'Open';
-      lines.push(`| ${g.topic} | ${g.mentions_count} | ${status} |`);
+  // Section 2: Documentation Gaps
+  lines.push('## Documentation Gaps');
+  lines.push('');
+  if (filteredGaps.length === 0 && topoGaps.length === 0) {
+    lines.push('*No significant gaps found*');
+  } else {
+    if (filteredGaps.length > 0) {
+      lines.push(`### By mention frequency (${filteredGaps.length} topics)`);
+      lines.push('');
+      lines.push('| Topic | Mentions | Context |');
+      lines.push('|---|---|---|');
+      for (const g of filteredGaps) {
+        const ctx = gapContexts.find((c) => c.topic === g.topic);
+        const ctxSummary = ctx?.mentions.length
+          ? `Referenced in ${ctx.mentions.map((m) => m.source_uri).join(', ')}`
+          : '';
+        lines.push(`| ${g.topic} | ${g.mentions_count} | ${ctxSummary} |`);
+      }
+      lines.push('');
     }
-    lines.push('');
+
+    if (topoGaps.length > 0) {
+      lines.push(`### By link topology (${topoGaps.length} topics)`);
+      lines.push('');
+      lines.push('| Topic | In-degree |');
+      lines.push('|---|---|');
+      for (const g of topoGaps) {
+        lines.push(`| ${g.topic} | ${g.in_degree} |`);
+      }
+      lines.push('');
+    }
   }
+  lines.push('');
 
-  if (stubPages.length > 0) {
-    lines.push('## Generated Stub Pages');
+  // Section 3: Health Metrics
+  lines.push('## Health Metrics');
+  lines.push('');
+  lines.push(`| Metric | Value |`);
+  lines.push(`|---|---|`);
+  lines.push(`| Files | ${health.file_count} |`);
+  lines.push(`| Nodes | ${health.node_count} |`);
+  lines.push(`| Chunks | ${health.chunk_count} |`);
+  lines.push(`| Edges | ${health.edge_count} |`);
+  lines.push('');
+
+  // Generated drafts section
+  if (stubsGenerated > 0) {
+    lines.push('## Generated Drafts');
     lines.push('');
-    for (const p of stubPages) {
-      const name = p.split('/').pop() ?? p;
-      lines.push(`- [[${name.replace('.md', '')}]]`);
-    }
+    lines.push(`${stubsGenerated} synthesis drafts written to \`_audit-drafts/\`. Review before promoting to wiki.`);
+    lines.push('');
+  } else {
+    lines.push('---');
+    lines.push('');
+    lines.push('*Run with `--generate-stubs` to auto-generate draft pages for gaps.*');
     lines.push('');
   }
 
@@ -238,35 +528,76 @@ function truncate(s: string, maxLen: number): string {
 }
 
 /**
- * Filter out noise from the gap detector. Rejects topics that are:
- * - Too short (common tokens like "or", "no", "id")
- * - Pure code fragments (paths, URLs, variable names with underscores)
- * - Common stopwords
+ * Filter out noise from the gap detector (D42 Tier 1 tightening).
+ *
+ * Rejects topics that are:
+ * - Too short
+ * - URLs, file paths, qualified names
+ * - Code fragments (snake_case, camelCase, SCREAMING_SNAKE)
+ * - Common stopwords (English + technical)
+ * - Single-word generic terms that aren't proper nouns/acronyms
  */
-function isRealGap(topic: string): boolean {
+export function isRealGap(topic: string): boolean {
   if (topic.length < MIN_TOPIC_LENGTH) return false;
 
   // Skip URLs, file paths, code fragments
   if (topic.startsWith('http') || topic.startsWith('/') || topic.startsWith('.')) return false;
   if (topic.includes('://')) return false;
+  // Qualified names (e.g., "fs.readFileSync", "path.join")
+  if (topic.includes('.') && !topic.includes(' ')) return false;
 
-  // Skip things that look like code (snake_case with no spaces, camelCase identifiers)
-  if (/^[a-z_]+$/.test(topic) && topic.includes('_') && !topic.includes(' ')) return false;
+  // Skip code-like patterns
+  // snake_case: all lowercase with underscores
+  if (/^[a-z_]+$/.test(topic) && topic.includes('_')) return false;
+  // camelCase: starts lowercase then has uppercase
+  if (/^[a-z]+[A-Z]/.test(topic) && !topic.includes(' ')) return false;
+  // SCREAMING_SNAKE_CASE
+  if (/^[A-Z][A-Z0-9_]+$/.test(topic)) return false;
 
-  // Skip common stopwords that aren't real topics
-  const stopwords = new Set([
-    'the', 'and', 'for', 'with', 'that', 'this', 'from', 'are', 'was', 'will',
-    'can', 'not', 'but', 'all', 'has', 'have', 'had', 'been', 'would', 'could',
-    'should', 'may', 'might', 'must', 'shall', 'into', 'than', 'then', 'when',
-    'where', 'which', 'while', 'about', 'after', 'before', 'between', 'under',
-    'over', 'only', 'also', 'just', 'like', 'more', 'most', 'some', 'such',
-    'each', 'every', 'both', 'either', 'neither', 'other', 'another',
-    'true', 'false', 'null', 'none', 'yes', 'done',
-  ]);
-  if (stopwords.has(topic.toLowerCase())) return false;
+  const lower = topic.toLowerCase();
 
-  // Skip single-word topics that are too generic
-  if (!topic.includes(' ') && topic.length < 6) return false;
+  // Skip common English stopwords
+  if (STOPWORDS.has(lower)) return false;
+  // Skip common technical terms that aren't real topics
+  if (TECH_STOPWORDS.has(lower)) return false;
+
+  // Single-word topics: only keep proper nouns/acronyms (starts with uppercase
+  // or is all-caps like "OAuth2", "Docker", "PostgreSQL")
+  if (!topic.includes(' ')) {
+    const looksProper = /^[A-Z]/.test(topic);
+    if (!looksProper) return false;
+  }
 
   return true;
 }
+
+const STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'are', 'was', 'will',
+  'can', 'not', 'but', 'all', 'has', 'have', 'had', 'been', 'would', 'could',
+  'should', 'may', 'might', 'must', 'shall', 'into', 'than', 'then', 'when',
+  'where', 'which', 'while', 'about', 'after', 'before', 'between', 'under',
+  'over', 'only', 'also', 'just', 'like', 'more', 'most', 'some', 'such',
+  'each', 'every', 'both', 'either', 'neither', 'other', 'another',
+  'true', 'false', 'null', 'none', 'yes', 'done', 'note', 'using',
+  'first', 'still', 'instead', 'enable', 'default', 'since', 'based',
+  'here', 'there', 'these', 'those', 'above', 'below', 'through',
+]);
+
+const TECH_STOPWORDS = new Set([
+  'example', 'section', 'configuration', 'implementation', 'method',
+  'function', 'parameter', 'argument', 'option', 'value', 'result',
+  'output', 'input', 'error', 'warning', 'status', 'type', 'string',
+  'number', 'boolean', 'object', 'array', 'list', 'file', 'path',
+  'name', 'version', 'update', 'change', 'create', 'delete', 'read',
+  'write', 'server', 'client', 'request', 'response', 'source', 'model',
+  'command', 'description', 'detail', 'content', 'window', 'provider',
+  'module', 'package', 'import', 'export', 'return', 'class', 'interface',
+  'property', 'field', 'table', 'column', 'index', 'query', 'schema',
+  'handler', 'callback', 'promise', 'async', 'await', 'event', 'action',
+  'state', 'props', 'component', 'render', 'route', 'endpoint', 'context',
+  'scope', 'token', 'session', 'header', 'body', 'payload', 'message',
+  'process', 'service', 'manager', 'factory', 'builder', 'helper',
+  'utility', 'config', 'setting', 'feature', 'support', 'format',
+  'connection', 'database', 'storage', 'cache', 'buffer', 'stream',
+  'directory', 'folder', 'entry', 'record', 'document', 'resource',
+]);

@@ -315,6 +315,12 @@ PINAKES_MAX_WRITE_SIZE=102400                       # max bytes per wiki write (
 
 **Never commit any env with secret values.** Use `.env.example` for placeholders, `.env` is gitignored.
 
+## Skills (Claude Code)
+
+- **`/audit-wiki`** — Deep agent-powered wiki audit. Runs the deterministic pipeline first (`pnpm run pinakes -- audit-wiki`), then does a deep content review finding cross-file contradictions, broken references, terminology inconsistencies, and stale info. Runs in a forked subagent. See `.claude/skills/audit-wiki/SKILL.md`.
+
+For non-Claude-Code clients: use `pnpm run pinakes audit-wiki` directly for the pipeline-based audit.
+
 ## Reference Documents
 
 - `dev-docs/presearch.md` — architecture decisions (source of truth for this file)

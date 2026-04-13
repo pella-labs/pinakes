@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { sqliteTable, text, integer, index, primaryKey } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, index, primaryKey } from 'drizzle-orm/sqlite-core';
 
 /**
  * Pinakes Drizzle schema (presearch.md §2.3, CLAUDE.md §Database Rules).
@@ -103,6 +103,8 @@ export const pinakesNodes = sqliteTable(
     tokenCount: integer('token_count').notNull(),
     /** Provenance confidence: 'extracted' (default), 'inferred' (AI-generated), 'ambiguous' (flagged) */
     confidence: text('confidence').notNull().default('extracted'),
+    /** Numeric confidence score 0.0-1.0, decays over time (Phase 11.1, D50) */
+    confidenceScore: real('confidence_score').notNull().default(0.7),
     /** Unix epoch ms of first insert */
     createdAt: integer('created_at').notNull(),
     /** Unix epoch ms of last update */
@@ -246,6 +248,28 @@ export const pinakesGaps = sqliteTable('pinakes_gaps', {
 });
 
 // ----------------------------------------------------------------------------
+// pinakes_claims — extracted topic-claims for contradiction detection (D45)
+// ----------------------------------------------------------------------------
+
+/**
+ * Persists LLM-extracted claims from wiki files for the Phase 9 audit pipeline.
+ * Each row is a single claim about a topic, extracted from a specific source file.
+ * Enables incremental auditing: skip re-extraction for unchanged files.
+ */
+export const pinakesClaims = sqliteTable('pinakes_claims', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  scope: text('scope').notNull(),
+  sourceUri: text('source_uri').notNull(),
+  chunkId: text('chunk_id').references(() => pinakesChunks.id, { onDelete: 'set null' }),
+  topic: text('topic').notNull(),
+  claim: text('claim').notNull(),
+  extractedAt: integer('extracted_at').notNull(),
+}, (table) => [
+  index('idx_claims_topic').on(table.scope, table.topic),
+  index('idx_claims_source').on(table.scope, table.sourceUri),
+]);
+
+// ----------------------------------------------------------------------------
 // pinakes_audit — every tool call (Phase 5 wires writes; Phase 2 creates table)
 // ----------------------------------------------------------------------------
 
@@ -282,6 +306,8 @@ export type PinakesEdge = typeof pinakesEdges.$inferSelect;
 export type NewPinakesEdge = typeof pinakesEdges.$inferInsert;
 export type PinakesLogRow = typeof pinakesLog.$inferSelect;
 export type NewPinakesLogRow = typeof pinakesLog.$inferInsert;
+export type PinakesClaim = typeof pinakesClaims.$inferSelect;
+export type NewPinakesClaim = typeof pinakesClaims.$inferInsert;
 
 /**
  * The list of all schema-managed tables, useful for the schema test that
@@ -294,6 +320,7 @@ export const PINAKES_TABLES = [
   'pinakes_chunks',
   'pinakes_log',
   'pinakes_gaps',
+  'pinakes_claims',
   'pinakes_audit',
 ] as const;
 

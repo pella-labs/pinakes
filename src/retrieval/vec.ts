@@ -1,5 +1,6 @@
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 
+import { effectiveConfidence } from '../gate/confidence.js';
 import type { Embedder } from './embedder.js';
 
 /**
@@ -23,6 +24,7 @@ export interface VecResult {
   confidence: string;
   title: string | null;
   section_path: string;
+  effective_confidence?: number;
 }
 
 /**
@@ -47,7 +49,7 @@ export function vecQuery(
     const rows = reader
       .prepare<
         [Buffer, number, string],
-        { id: string; text: string; source_uri: string; node_id: string; distance: number; confidence: string; title: string | null; section_path: string }
+        { id: string; text: string; source_uri: string; node_id: string; distance: number; confidence: string; title: string | null; section_path: string; confidence_score: number; updated_at: number; kind: string }
       >(
         `SELECT c.id AS id, c.text AS text,
                 n.source_uri AS source_uri,
@@ -55,7 +57,10 @@ export function vecQuery(
                 v.distance AS distance,
                 n.confidence AS confidence,
                 n.title AS title,
-                n.section_path AS section_path
+                n.section_path AS section_path,
+                n.confidence_score AS confidence_score,
+                n.updated_at AS updated_at,
+                n.kind AS kind
            FROM pinakes_chunks_vec v
            JOIN pinakes_chunks c ON c.rowid = v.rowid
            JOIN pinakes_nodes n ON c.node_id = n.id
@@ -66,7 +71,18 @@ export function vecQuery(
       )
       .all(buf, limit, scope);
 
-    return rows;
+    const now = Date.now();
+    return rows.map((r) => ({
+      id: r.id,
+      text: r.text,
+      source_uri: r.source_uri,
+      node_id: r.node_id,
+      distance: r.distance,
+      confidence: r.confidence,
+      title: r.title,
+      section_path: r.section_path,
+      effective_confidence: effectiveConfidence(r.confidence_score, r.updated_at, r.kind, now),
+    }));
   } catch {
     // Graceful degradation: empty vec table, extension not loaded, etc.
     return [];

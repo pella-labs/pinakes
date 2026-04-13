@@ -681,6 +681,716 @@ Summary — see `PRD.md` for the detailed breakdown with acceptance criteria and
 
 ---
 
+## Loop 8: audit-wiki v2 — Feature Redesign (2026-04-11)
+
+> **Context**: The `audit-wiki` CLI command (Phase 8 stretch H) shipped with three subsystems — contradiction detection, gap detection, and stub page generation — that all underperform in production. This amendment redesigns all three, plus adds progress feedback. The existing LLM provider factory (D36) and CLI infrastructure are reused.
+>
+> **Team**: Architect (proposes), Challenger (attacks), Researcher (validates with evidence). All Opus 4.6.
+>
+> **Mode**: FEATURE MODE — Loop 0 (research) -> Loop 2 (architecture) -> Loop 4 (plan) -> Loop 6 (gap check).
+
+### Loop 0: Research Brief
+
+#### Problem inventory (measured on the Pharos wiki — 18 files, ~6000 chunks)
+
+| # | Subsystem | Current behavior | Measured result | Root cause |
+|---|---|---|---|---|
+| P1 | Contradiction detection | Pairwise LLM judge on 50 pairs selected by vector cosine <= 0.3 | 0 contradictions found on a wiki with known inconsistencies | (a) cosine <= 0.3 filters to near-identical chunks, not contradictory ones; (b) 50 pairs is a tiny sample; (c) same-source pairs skipped, but contradictions often live within the same conceptual domain across files |
+| P2 | Gap detection | Regex extraction of bold/wikilink/backtick terms, count mentions, flag >= 3 mentions with no page | 1218 "gaps" (391 "significant") — noise like "description", "command", "instead", "window", "default" | Purely syntactic; no semantic understanding of what constitutes a real topic vs. a common word |
+| P3 | Stub generation | LLM generates placeholder with questions | Empty shells with "What is X? How does X relate to Y?" | No synthesis from existing content; creates noise that gets indexed |
+| P4 | UX | `console.log("Scanning...")` then silence for up to 50 min | Zero progress for potentially 50 sequential LLM calls | No streaming, no phase indicators, no progress counters |
+
+#### Research findings
+
+**Contradiction detection approaches** (from literature review):
+
+| Approach | How it works | Pros | Cons | Source |
+|---|---|---|---|---|
+| **Pairwise LLM judge** (current) | Pick chunk pairs by similarity, ask LLM "do these contradict?" | Simple prompt | O(n^2) pairs, similarity threshold misses cross-domain contradictions, 50-pair ceiling too small | Current implementation |
+| **Assertion extraction + fact table** | LLM extracts structured claims (subject, predicate, object) from each chunk, then compares claims sharing the same subject | Focuses on factual claims; scales to whole wiki in 1 pass; claim table is reusable | Extraction quality depends on LLM; needs schema for claims | [Stanford NLP contradiction detection](https://nlp.stanford.edu/pubs/contradiction-acl08.pdf), [Springer formal logic + LLM](https://link.springer.com/article/10.1007/s10515-024-00452-x) |
+| **Topic-clustered summarization** | Cluster chunks by topic, generate per-topic summary, then compare summaries | Reduces N from "all pairs" to "all topics"; catches cross-file contradictions | Still needs LLM for clustering; may merge distinct topics | [datarootsio/knowledgebase_guardian](https://github.com/datarootsio/knowledgebase_guardian) |
+| **RAG contradiction validators** | On every retrieval, check if returned docs contradict each other | Real-time; catches live contradictions | Query-path latency cost; only finds contradictions relevant to current query | [arxiv 2504.00180](https://arxiv.org/abs/2504.00180) |
+| **NLI-based classification** | Use an NLI model (entailment/contradiction/neutral) on chunk pairs | Fast; no LLM call per pair | NLI models are weak on domain-specific technical content; miss implicit contradictions | [ACL 2025 findings](https://aclanthology.org/2025.findings-acl.1305.pdf) |
+
+**Gap detection approaches**:
+
+| Approach | How it works | Pros | Cons |
+|---|---|---|---|
+| **Syntactic extraction** (current) | Regex for bold/wikilink/backtick, count mentions | Zero LLM cost | Extracts noise; no semantic understanding |
+| **LLM-assisted topic extraction** | LLM reads each file, extracts key topics/concepts | Understands semantics | LLM call per file; expensive at scale |
+| **Hybrid: syntactic extraction + LLM filter** | Extract candidates syntactically, then batch-filter with LLM | Best of both: cheap extraction + smart filtering | One additional LLM call (batched) |
+| **Embedding cluster analysis** | Cluster chunk embeddings, identify orphan clusters | Finds implicit gaps | Hard to name what's missing |
+| **Graph topology analysis** | Find nodes with high in-degree (many references) but no dedicated page | Uses existing edge data | Only works if wikilinks are maintained |
+
+**Stub generation approaches**:
+
+| Approach | How it works | Pros | Cons |
+|---|---|---|---|
+| **Placeholder stubs** (current) | LLM generates "What is X?" template | Simple | Noise; no real content |
+| **Synthesis stubs** | Gather all mentions of the gap topic, LLM synthesizes a draft page from existing context | Real content from day 1 | More LLM calls; synthesis quality varies |
+| **Report-only (no stubs)** | Produce an actionable report but don't create files | No noise; human decides | Gaps not auto-filled |
+| **Draft + review gate** | LLM synthesizes draft, writes to `_drafts/` not wiki root, human or LLM reviews before promotion | Quality gate; no noise in main wiki | Extra step; needs draft promotion flow |
+
+### Loop 2: Architecture Decisions (with debate)
+
+#### D41 — Contradiction detection: Topic-clustered assertion extraction
+
+**Architect proposes**: Replace the pairwise LLM judge with a two-phase pipeline:
+
+- **Phase A (Assertion Extraction)**: For each wiki file, send the full content to the LLM with a structured extraction prompt. The LLM returns a JSON array of claims: `{ subject: string, predicate: string, object: string, source_uri: string, chunk_id: string }`. One LLM call per file (~18 calls for Pharos wiki). Store claims in a new `pinakes_claims` table.
+- **Phase B (Claim Comparison)**: Group claims by normalized subject. For each subject with 2+ claims from different source files, send the claim group to the LLM as a single batch: "Do any of these claims about [subject] contradict each other?" One LLM call per subject group (estimated 10-30 groups for a typical wiki).
+
+Total LLM calls: ~20-50 (vs. 50 pairwise calls), but each call is more productive because it compares semantically related claims, not random pairs.
+
+**Challenger attacks**: "Assertion extraction is fragile. LLMs extract differently on each run. Your claim table will be noisy — `{subject: 'auth', predicate: 'uses', object: 'bcrypt'}` vs `{subject: 'authentication', predicate: 'implemented with', object: 'bcrypt hashing'}`. How do you normalize subjects for grouping? You've moved the hard problem from 'find contradictions' to 'normalize extracted claims', which is equally hard."
+
+**Architect responds**: Fair. Pure triple extraction is over-structured for our wiki's prose-heavy content. **Revised proposal**: drop the rigid (S, P, O) schema. Instead:
+
+- **Phase A (Topic-Claim Extraction)**: LLM reads each file and returns `{ topic: string, claims: string[] }[]` — a list of topics discussed in this file, each with the natural-language claims made about that topic. Topic normalization is the LLM's job during extraction (prompt instructs: "Use the most common/canonical name for each topic, e.g. 'authentication' not 'auth flow'").
+- **Phase B (Cross-File Comparison)**: Group by topic (case-insensitive match). For each topic with claims from 2+ files, send the full claim set to the LLM: "Here are all claims about [topic] from different wiki files. Identify any contradictions."
+
+This is more natural for prose wikis. The LLM handles normalization implicitly during extraction rather than as a separate step.
+
+**Challenger attacks again**: "LLM topic normalization will still produce variants — 'OAuth2' vs 'OAuth 2.0' vs 'authentication'. You'll miss contradictions between files that use different terminology for the same concept."
+
+**Researcher validates**: The datarootsio/knowledgebase_guardian project demonstrates that semantic similarity between extracted topics handles this. **Resolution**: after Phase A, do a lightweight dedup pass — compute embeddings for each extracted topic string, merge topics with cosine similarity > 0.85 into the same group. This uses the already-loaded embedder (no new dep) and handles "OAuth2" / "OAuth 2.0" / "authentication" merging naturally. Cost: ~30 embedding calls for topic strings (sub-millisecond each with the bundled MiniLM model).
+
+**Decision**: Topic-clustered claim extraction with embedding-based topic dedup.
+
+| Aspect | Old (pairwise judge) | New (topic-clustered) |
+|---|---|---|
+| LLM calls | 50 (1 per pair) | ~20-50 (1 per file + 1 per topic group) |
+| Coverage | 50 random pairs from 6000 chunks | All files, all topics |
+| Cross-file detection | Accidental (if similar chunks from different files) | Systematic (groups by topic across files) |
+| Normalization | None (cosine similarity only) | LLM + embedding dedup |
+| Output quality | Binary yes/no per pair | Grouped by topic, contextual explanation |
+
+#### D42 — Gap detection: Hybrid syntactic + LLM filter
+
+**Architect proposes**: Keep the cheap syntactic extraction (extractConcepts) but add an LLM filtering pass. After extracting candidate topics, batch them into a single LLM call: "Here is a list of terms extracted from a technical wiki. Which of these represent real documentation topics that would benefit from a dedicated wiki page? Filter out common words, code syntax, and generic terms."
+
+**Challenger attacks**: "One LLM call to filter 1218 candidates? That's a massive prompt. You'll blow the context window or get unreliable results."
+
+**Architect responds**: Batch in groups of 100 candidates per call. At 1218 candidates, that's ~12 LLM calls. But more importantly, the syntactic filter (`isRealGap()`) is already reducing to 391 "significant" gaps. The LLM filter runs on the post-syntactic set. With a tighter syntactic pre-filter (raise `MIN_TOPIC_LENGTH` to 5, add single-word rejection for terms without spaces, add more stopwords), we can reduce to ~100-200 candidates. One or two LLM calls.
+
+**Challenger attacks again**: "The gap detector runs on every ingest. You're proposing to call the LLM on every file save. That violates the rate-limit rule."
+
+**Researcher validates**: Critical point. The LLM filter should NOT run on every ingest. It should run only during `audit-wiki`. The ingest-time `detectGaps()` continues as-is (cheap syntactic), populating `pinakes_gaps` with noisy candidates. The `audit-wiki` command then runs the LLM filter as a batch cleanup over the accumulated gaps.
+
+**Decision**: Two-tier gap detection. Tier 1 (ingest-time): syntactic extraction with improved stopword list, unchanged. Tier 2 (audit-time): LLM batch filter over accumulated gaps, reducing noise to actionable items. Additionally, leverage graph topology — topics with high wikilink in-degree but no dedicated page are strong gap signals that don't need LLM validation.
+
+#### D43 — Stub generation: Synthesis from context, report-first
+
+**Architect proposes**: Replace empty placeholder stubs with synthesis-from-context. For each confirmed gap, gather all chunks that mention the gap topic (already have mention_count in `pinakes_gaps`), send them to the LLM with: "Synthesize a wiki page about [topic] based solely on what these existing chunks say about it. Include only facts already present in the knowledge base. Mark any uncertain claims."
+
+**Challenger attacks**: "This creates content that looks authoritative but might subtly misrepresent the source chunks. A synthesis error is worse than a placeholder because it gets trusted."
+
+**Architect responds**: Valid concern. **Revised proposal**: Default mode is **report-only** — produce an actionable audit report listing confirmed gaps with a summary of what the wiki already says about each topic (gathered mentions). Stub generation becomes opt-in via `--generate-stubs` flag, and stubs are written to `_audit-drafts/` subdirectory (gitignored by default), not to the main wiki root. The audit report includes a review checklist.
+
+**Challenger agrees**: "Report-first is correct. The human or a reviewing LLM decides what to promote. No auto-pollution of the wiki."
+
+**Decision**: Default is report-only with context summaries. Opt-in `--generate-stubs` writes to `_audit-drafts/`, not wiki root.
+
+#### D44 — Progress feedback: Phased progress with callbacks
+
+**Architect proposes**: Add a progress callback mechanism to all long-running audit operations. The `audit-wiki` command prints phase headers and per-item progress:
+
+```
+Phase 1/3: Extracting topics and claims from 18 wiki files...
+  [1/18] architecture.md — 5 topics, 12 claims
+  [2/18] auth-decisions.md — 3 topics, 7 claims
+  ...
+Phase 2/3: Comparing claims across 24 topic groups...
+  [1/24] authentication — 4 claims from 3 files — no contradictions
+  [2/24] database-schema — 6 claims from 2 files — 1 CONTRADICTION found
+  ...
+Phase 3/3: Filtering gaps and generating report...
+  87 candidate gaps → 12 confirmed → report written
+```
+
+**Challenger attacks**: "This is cosmetic. The real issue is that each LLM call can take 2-60 seconds. Between progress lines, the user still waits."
+
+**Architect responds**: Each LLM call is bounded (D36 providers have 30s/60s timeouts). The progress line prints BEFORE each call, so the user sees which file/topic is being processed. If a call takes 30s, the user sees `[3/18] database.md...` and knows progress is happening. Additionally, emit elapsed time per item so the user can estimate remaining time.
+
+**Decision**: Three-phase progress output with per-item indicators, elapsed time, and running totals. No new deps needed — `process.stderr.write()` for progress that doesn't interfere with structured output.
+
+#### D45 — Claims table schema
+
+**New table** `pinakes_claims` for persisting extracted claims across audit runs:
+
+```sql
+CREATE TABLE pinakes_claims (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope TEXT NOT NULL,
+  source_uri TEXT NOT NULL,
+  chunk_id TEXT,
+  topic TEXT NOT NULL,
+  claim TEXT NOT NULL,
+  extracted_at INTEGER NOT NULL,
+  FOREIGN KEY (chunk_id) REFERENCES pinakes_chunks(id) ON DELETE SET NULL
+);
+CREATE INDEX idx_claims_topic ON pinakes_claims(scope, topic);
+```
+
+**Rationale**: Persisting claims means subsequent audit runs can skip re-extraction for unchanged files (compare `source_sha` from `pinakes_nodes`). Only new/changed files need re-extraction. This amortizes the LLM cost over time.
+
+#### D46 — Audit report format
+
+The audit report (`_audit-report.md`) is restructured into three sections with actionable items:
+
+1. **Contradictions** — grouped by topic, with source file references, the conflicting claims quoted, and a suggested resolution action.
+2. **Documentation Gaps** — LLM-filtered list of real topics that need dedicated pages, with a summary of what the wiki already says about each topic (context from mentions).
+3. **Health Metrics** — file count, chunk count, topic coverage, orphan pages (no incoming links), stale pages (not updated recently).
+
+### Loop 4: Phased Implementation Plan
+
+See PRD.md Phase 9 for the detailed breakdown. Summary:
+
+| Sub-phase | Goal | LLM calls | Effort |
+|---|---|---|---|
+| 9.1 | Progress framework + improved syntactic gap filter | 0 | 1/2 day |
+| 9.2 | Topic-claim extraction (Phase A of contradiction pipeline) | 1 per wiki file | 1 day |
+| 9.3 | Cross-file contradiction comparison (Phase B) + claims table | 1 per topic group | 1/2 day |
+| 9.4 | LLM gap filter + graph topology gaps + report generation | 1-2 batch calls | 1/2 day |
+| 9.5 | Opt-in synthesis stubs + testing | 1 per stub | 1/2 day |
+
+**Total**: ~3 days, ~40-80 LLM calls per full audit run on a 20-file wiki.
+
+### Loop 6: Gap Analysis
+
+| # | Gap | Severity | Mitigation |
+|---|---|---|---|
+| G12 | Claims table adds a 9th table to the schema — needs a Drizzle migration | Low | Standard `drizzle-kit generate`; table is optional (only populated by audit-wiki) |
+| G13 | LLM extraction quality varies by provider — Ollama local models may produce worse claims than API models | Medium | Accept degraded quality with local models; document that API providers (Anthropic, OpenAI) produce better audit results; non-fatal — audit still runs, just with more noise |
+| G14 | Topic embedding dedup threshold (0.85) may merge distinct topics or fail to merge synonyms | Low | Make threshold configurable via `--topic-similarity` flag; default 0.85 based on MiniLM empirical clustering quality |
+| G15 | Unchanged file skip relies on `source_sha` from `pinakes_nodes`; if a file is changed but not yet re-ingested, claims will be stale | Low | Run a consistency check at audit start: compare disk `source_sha` to DB `source_sha`, warn on mismatches, optionally trigger re-ingest for stale files |
+| G16 | `_audit-drafts/` directory needs to be gitignored | Low | Append to `.pinakes/.gitignore` on first stub generation |
+| G17 | Batching 100 gap candidates per LLM call may exceed context window for smaller models (e.g., Ollama with 4K context) | Medium | Detect model context window from provider; fall back to smaller batches (20 per call) for local models |
+
+### Decision log additions
+
+| D# | Decision | Source |
+|---|---|---|
+| D41 | **Topic-clustered claim extraction** for contradiction detection: Phase A extracts `{topic, claims[]}` per file, Phase B compares claims grouped by topic across files. Embedding-based topic dedup (cosine > 0.85) handles terminology variants. Replaces pairwise LLM judge. | Loop 8 audit-wiki v2 2026-04-11 |
+| D42 | **Two-tier gap detection**: Tier 1 (ingest-time) remains syntactic with improved stopwords. Tier 2 (audit-time) adds LLM batch filter over accumulated gaps + graph topology signals (high in-degree, no dedicated page). | Loop 8 audit-wiki v2 2026-04-11 |
+| D43 | **Report-first, stubs opt-in**: Default `audit-wiki` produces an actionable report. `--generate-stubs` writes synthesis-from-context drafts to `_audit-drafts/` (gitignored), not wiki root. | Loop 8 audit-wiki v2 2026-04-11 |
+| D44 | **Three-phase progress output**: per-item indicators with elapsed time on stderr. No new deps. | Loop 8 audit-wiki v2 2026-04-11 |
+| D45 | **`pinakes_claims` table** for persisting extracted claims. Enables incremental audit (skip unchanged files). 9th table in the schema. | Loop 8 audit-wiki v2 2026-04-11 |
+| D46 | **Restructured audit report**: contradictions grouped by topic, LLM-filtered gaps with context summaries, health metrics section. | Loop 8 audit-wiki v2 2026-04-11 |
+
+---
+
+## Loop 10: Agent-based wiki audit — Feature Exploration (2026-04-11)
+
+> **Context**: Phase 9 shipped a deterministic pipeline (claims extraction, topic grouping, LLM comparison, gap filtering, report). It works but is rigid — it can only find contradictions between pre-extracted claims, not subtle cross-file inconsistencies like "CONTRIBUTING.md says npm but CLAUDE.md says pnpm". The question: should the audit be reimagined as an LLM agent with tool access that can browse the wiki organically?
+>
+> **Team**: Architect (proposes), Challenger (attacks), Researcher (validates). All Opus 4.6.
+>
+> **Mode**: FEATURE MODE — Loop 0 (research) -> Loop 2 (architecture) -> Loop 4 (plan) -> Loop 6 (gap check).
+
+### Loop 0: Research Brief
+
+#### Option inventory
+
+| # | Option | Description |
+|---|---|---|
+| O1 | **Claude Code skill** | A `.claude/skills/audit-wiki/SKILL.md` file that ships with the repo. The user types `/audit-wiki` and Claude Code loads the skill's system prompt, then the agent uses Claude Code's full tool access (Read, Grep, Glob, Bash, Edit) plus the Pinakes MCP tools (`knowledge_search`, `knowledge_query`). No new code — just a markdown prompt file. |
+| O2 | **Standalone tool-use agent** | A new `src/cli/agent-audit.ts` module implementing its own tool-use loop. Defines tools (read_wiki_file, search_wiki, list_files, write_report) and runs the agent loop internally via the LLM provider factory (D36). Works with any LLM provider. |
+| O3 | **MCP sampling** | The MCP server uses `sampling/createMessage` to ask the CLIENT's LLM to perform the audit. The server defines tools, the client provides the model. Per MCP 2025-11-25 spec (tool calling in sampling). |
+| O4 | **Hybrid: Pipeline + Agent review** | Phase 9 pipeline does cheap/incremental work (claims extraction, gap counting, health metrics). Agent gets a structured briefing from pipeline output and does the deep analysis (reading actual files, finding subtle issues the pipeline missed). |
+
+#### Research findings
+
+**Claude Code skills system** (validated via [official docs](https://code.claude.com/docs/en/skills) and [Anthropic's skills repo](https://github.com/anthropics/skills)):
+
+- Skills are markdown files in `.claude/skills/skill-name/SKILL.md` with YAML frontmatter.
+- Frontmatter fields: `name`, `description`, `allowed-tools` (e.g., `Read,Grep,Glob,Bash`), `context: fork` (run in isolated subagent), `agent` (type of subagent), `disable-model-invocation` (manual-only).
+- When invoked via `/skill-name`, the skill's markdown content is loaded as the system prompt. Claude Code then uses its full tool surface to execute.
+- Token overhead: ~61 tokens for skill metadata in context. The skill instructions themselves are loaded on-demand, not permanently resident.
+- Skills can access MCP tools that are connected to the session — so a Pinakes skill would have access to `knowledge_search` and `knowledge_query` automatically.
+- `context: fork` runs the skill in an isolated subagent with its own context window — no pollution of the main conversation.
+- **Key advantage**: zero implementation code. The skill is a prompt file. Claude Code brings the full agent loop, tool infrastructure, and model.
+- **Key limitation**: only works in Claude Code. Not portable to Goose, Codex, Cursor, OpenCode. Violates the client-agnostic constraint from CLAUDE.md.
+
+**MCP sampling** (validated via [MCP spec 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/client/sampling) and [client support investigation](https://github.com/anthropics/claude-code/issues/1785)):
+
+- The 2025-11-25 spec added tool calling in sampling requests (`CreateMessageRequest.params.tools`, `toolChoice`).
+- Server-side agent loops: server sends `sampling/createMessage` with tools, client's LLM responds with tool calls, server executes tools, sends new sampling request with results. Loops until final text response.
+- **Critical blocker**: as of April 2026, **no major MCP client implements sampling**. Claude Code does not support it. Claude Desktop does not. Cursor does not. Goose does not. Multiple GitHub issues (e.g., [claude-code#1785](https://github.com/anthropics/claude-code/issues/1785), [Roo-Code#5372](https://github.com/RooCodeInc/Roo-Code/issues/5372)) request it, all unresolved.
+- The MCP TS SDK has the `createMessage` method on the server class, but it returns an error when no client supports the capability.
+- **Verdict**: MCP sampling is a dead end for now. The spec is there, the implementations are not.
+
+**Standalone tool-use agent** (validated via [RepoAudit](https://arxiv.org/html/2501.18160v1), [EMAD multi-agent debate](https://arxiv.org/html/2408.08902v1), and the existing LLM provider factory):
+
+- Building a custom tool-use loop requires: (a) tool definition schema, (b) tool execution dispatch, (c) conversation history management, (d) stop condition detection, (e) error/retry handling, (f) token budget management.
+- The LLM provider factory (D36) currently exposes only `complete({ system, prompt, maxTokens }): Promise<string>`. It has no tool-use API. Adding tool-use requires either: extending the provider interface to support `tools` + `tool_choice` parameters and structured tool-call responses, or building a text-based tool-use protocol (parse tool calls from plain text output).
+- Text-based tool-use is fragile. Structured tool-use (function calling) is supported by Anthropic API, OpenAI API, and Ollama, but not by `claude -p` subprocess or `codex exec` subprocess.
+- Estimated implementation: ~400-600 LOC for the agent loop + ~200 LOC for tool definitions + ~200 LOC for provider extensions = ~800-1000 LOC of new code.
+- **Token cost**: an agent browsing 20 wiki files at ~2000 tokens each = ~40K tokens input per file read. If the agent reads 10 files deeply + does 5 search queries, estimated ~60-80K input tokens per audit. At Opus pricing ($5/M input, $25/M output), this is ~$0.30-0.50 per run. At Haiku pricing, ~$0.03-0.05. At Ollama, $0.
+- **Key advantage**: portable across all providers. Works headless (CI, cron, automated).
+- **Key disadvantage**: significant implementation effort. The agent loop is its own subsystem with edge cases (stuck loops, hallucinated tool calls, exceeding token budgets).
+
+**Hybrid: Pipeline + Agent review**:
+
+- Pipeline handles the cheap, incremental, deterministic work: claims extraction (already built), gap counting, health metrics, topology analysis.
+- Agent gets a structured briefing: "Here are the files in the wiki. Here are the contradictions the pipeline found. Here are the gaps. Now read the actual files and look for issues the pipeline missed — tool mismatches, version inconsistencies, stale instructions, missing cross-references."
+- The agent operates on pipeline output, not from scratch. This bounds the agent's scope and reduces token cost.
+- **Key advantage**: leverages existing Phase 9 work. Agent adds value without replacing what's built.
+- **Key disadvantage**: still requires an agent loop implementation (same effort as O2). But the agent's task is more focused.
+
+#### Token cost comparison
+
+| Option | Estimated tokens per audit (20-file wiki) | Dollar cost (Haiku) | Dollar cost (Opus) | Notes |
+|---|---|---|---|---|
+| O1 (skill) | 100-200K (Claude Code session) | Included in Max sub | Included in Max sub | User's subscription absorbs cost |
+| O2 (standalone agent) | 60-80K | $0.03-0.05 | $0.30-0.50 | Per audit run |
+| O3 (MCP sampling) | 60-80K | N/A | N/A | No clients implement it |
+| O4 (hybrid) | 30-50K (agent portion) + pipeline LLM | $0.02-0.03 + pipeline | $0.15-0.25 + pipeline | Agent scope is bounded |
+| Phase 9 pipeline (current) | ~20-40K | $0.01-0.02 | $0.10-0.20 | Already built and working |
+
+### Loop 2: Architecture Decisions (with debate)
+
+#### D47 — Agent audit approach: Claude Code skill (O1) as primary, with pipeline as pre-flight
+
+**Architect proposes**: Ship a Claude Code skill at `.claude/skills/audit-wiki/SKILL.md` that:
+1. Runs the existing Phase 9 pipeline first via Bash (`pnpm run pinakes -- audit-wiki`) to get the structured report.
+2. Reads the report and the wiki files, then performs deep analysis using Claude Code's full tool access.
+3. Produces an enhanced audit report with findings the pipeline couldn't catch.
+
+This is O4 (hybrid) implemented via O1 (skill). Zero new code for the agent loop — Claude Code IS the agent.
+
+**Challenger attacks**: "This violates the client-agnostic constraint from CLAUDE.md. It only works in Claude Code. A user on Goose or Cursor gets nothing."
+
+**Architect responds**: The constraint says 'Do not add client-specific coupling (Electron IPC, Goose-specific channels, etc.).' A skill file is passive content — it doesn't couple the server to Claude Code. The Pinakes MCP server remains client-agnostic. The skill is an *addon* that ships with the repo for users who happen to use Claude Code. Users on other clients still have the Phase 9 pipeline via `pnpm run pinakes -- audit-wiki`. The skill is additive, not exclusive.
+
+Furthermore, the skill approach has overwhelming practical advantages:
+- **Zero implementation code.** It's a markdown file with a system prompt.
+- **Claude Code's agent loop is battle-tested.** We don't build, debug, or maintain our own tool-use loop.
+- **Full tool access.** The agent can Read files, Grep for patterns, Glob for file discovery, use `knowledge_search` and `knowledge_query` MCP tools. It can find "CONTRIBUTING.md says npm but CLAUDE.md says pnpm" because it can literally read both files.
+- **`context: fork` isolation.** The audit runs in a subagent that doesn't pollute the user's main conversation.
+- **Token cost is absorbed by the user's Claude subscription.** No API key management.
+
+**Challenger attacks again**: "What about O2 (standalone agent)? It would work with any provider."
+
+**Architect responds**: Building a standalone tool-use agent requires ~800-1000 LOC of new code:
+- Extending the LlmProvider interface with tool-use support
+- Building a conversation history manager
+- Building a tool dispatch loop with stop-condition detection
+- Handling hallucinated tool calls, stuck loops, token budget overflows
+- Testing all of this against 4+ LLM providers
+
+This is a meaningful subsystem. And the result would be inferior to Claude Code's agent, which has years of engineering behind its tool-use loop, retry logic, and context management. We'd be building a worse version of what Claude Code already does.
+
+The right move is: skill for Claude Code users (the majority of our users, given the project started as a Claude Code MCP server), Phase 9 pipeline for everyone else.
+
+**Challenger accepts with a condition**: "Ship O2 (standalone agent) as a future option, not now. Document the extension point. If MCP sampling lands, it becomes O3 automatically. For now, the skill + pipeline hybrid is the right call."
+
+**Decision**: **D47 — Claude Code skill as primary audit agent, Phase 9 pipeline as universal fallback.**
+
+| Aspect | Skill (O1) | Standalone agent (O2) | MCP sampling (O3) | Hybrid (O4) |
+|---|---|---|---|---|
+| Implementation effort | ~0 (markdown file) | ~800-1000 LOC | Blocked (no clients) | ~800-1000 LOC |
+| Client support | Claude Code only | Any provider | None currently | Any provider |
+| Agent quality | Excellent (CC's agent) | DIY (fragile) | N/A | DIY (fragile) |
+| Tool access | Full (Read, Grep, Glob, MCP) | Limited (custom tools) | MCP tools only | Limited (custom tools) |
+| Maintenance burden | Near zero | Ongoing | N/A | Ongoing |
+| Token cost model | User's subscription | API/Ollama | Client's model | API/Ollama |
+| Can find "npm vs pnpm" | Yes (reads actual files) | Yes (if tools are good) | Yes (if tools are good) | Yes |
+| Portability | Claude Code only | Universal | Future | Universal |
+
+**Lock**: Ship the skill. Document the standalone agent as a future extension point for when MCP sampling adoption grows or when users on non-Claude-Code clients need agent-level auditing.
+
+#### D48 — Skill design: pre-flight pipeline + deep agent review
+
+**Decision**: The skill follows a two-phase workflow:
+
+1. **Pre-flight** (deterministic, cheap): Run `pnpm run pinakes -- audit-wiki` via Bash to produce `_audit-report.md`. This leverages all Phase 9 work — claims extraction, contradiction detection, gap filtering, health metrics.
+
+2. **Deep review** (agentic, thorough): Claude reads the audit report, then browses the wiki files looking for issues the pipeline can't catch:
+   - Cross-file terminology inconsistencies (npm vs pnpm, different version numbers)
+   - Instructions that reference non-existent files or paths
+   - Stale information (dates, versions) that may be outdated
+   - Contradictions between code conventions (CLAUDE.md) and actual documentation
+   - Missing cross-references between related topics
+   - Unclear or ambiguous instructions
+
+3. **Output**: Claude produces an enhanced report in the conversation, summarizing both the pipeline findings and its own deep-review findings. Optionally writes the enhanced report to `_audit-report-deep.md`.
+
+#### D49 — Standalone agent as future extension point (deferred)
+
+**Decision**: Document the extension point for a standalone tool-use agent (`src/cli/agent-audit.ts`) but do not implement it now. The prerequisites for a worthwhile standalone agent are:
+
+1. LlmProvider interface extended with tool-use support (tools param, structured tool-call responses)
+2. At least 2 providers support structured tool-use (Anthropic API and OpenAI API do; Ollama does; `claude -p` does not)
+3. A reusable agent loop abstraction that handles conversation history, stop conditions, and error recovery
+
+When MCP sampling achieves broad client adoption, it becomes the preferred server-side agent mechanism (O3), making O2 unnecessary. Monitor MCP sampling adoption quarterly.
+
+### Loop 4: Implementation Plan
+
+#### What to build (Phase 10)
+
+| Item | Type | Effort |
+|---|---|---|
+| `.claude/skills/audit-wiki/SKILL.md` | Markdown skill file | 1-2 hours |
+| Presearch + PRD updates | Documentation | This document |
+| Optional: `_audit-report-deep.md` write support | Enhancement to skill prompt | Included in skill |
+
+**Total effort**: Less than half a day. This is primarily a prompt-engineering exercise, not a coding exercise.
+
+#### Skill file structure
+
+```
+.claude/
+  skills/
+    audit-wiki/
+      SKILL.md        # Main skill definition with frontmatter + prompt
+```
+
+#### Frontmatter design
+
+```yaml
+---
+name: audit-wiki
+description: Run a deep audit of the project wiki — finds contradictions, gaps, stale info, and terminology inconsistencies
+context: fork
+allowed-tools: Read,Grep,Glob,Bash,mcp__kg-mcp__kg_search,mcp__kg-mcp__kg_execute
+---
+```
+
+Key decisions:
+- `context: fork` — runs in an isolated subagent. The audit doesn't pollute the user's main conversation context.
+- `allowed-tools` — grants file access (Read, Grep, Glob), Bash (for running the pipeline), and the two Pinakes MCP tools. Does NOT grant Write or Edit — the audit is read-only by default.
+- `disable-model-invocation` is NOT set — Claude can suggest running the audit when it detects wiki quality issues.
+
+#### Skill prompt design principles
+
+1. **Pipeline-first**: Always run the Phase 9 pipeline before doing agent-level analysis. This grounds the agent in structured findings.
+2. **File-reading is the differentiator**: The skill's unique value is reading actual file content and cross-referencing. The pipeline can't do this (it works on chunks and extracted claims).
+3. **Structured output**: The agent should produce findings in a consistent format: file, issue type, description, severity, suggested fix.
+4. **Bounded scope**: The agent should focus on the wiki directory (`.pinakes/wiki/`), not the entire codebase. Limit to reading wiki files + CLAUDE.md + key config files.
+5. **Idempotent**: Running the skill twice on the same wiki should produce similar findings.
+
+### Loop 6: Gap Analysis
+
+| # | Gap | Severity | Mitigation |
+|---|---|---|---|
+| G18 | Skill only works in Claude Code — users on Goose, Codex, Cursor, OpenCode get no agent audit | Medium | Phase 9 pipeline is the universal fallback. Document this explicitly. Monitor MCP sampling adoption for future O3 implementation. |
+| G19 | `context: fork` subagent may not have access to MCP tools in all Claude Code versions | Low | Test against current Claude Code. If MCP tools are unavailable in fork, remove `context: fork` and accept conversation pollution. |
+| G20 | MCP tool names in `allowed-tools` may not match — depends on how the user configured the Pinakes server name | Medium | Use env-configurable tool names matching `PINAKES_SERVER_NAME`. Document the default names in the skill instructions. If names don't match, the skill degrades to file-reading-only audit (still valuable). |
+| G21 | Token cost of deep review could be high for large wikis (50+ files) | Low | Skill prompt instructs the agent to prioritize: read the pipeline report first, then selectively read files that are flagged or suspicious. Don't read every file. |
+| G22 | Skill prompt quality determines audit quality — prompt engineering is empirical | Medium | Ship a v1 prompt, iterate based on real-world results. The skill file is easy to update — it's just markdown. |
+| G23 | `allowed-tools` field may not be supported when using Skills through the SDK (per Claude Code docs) | Low | This is a CLI-specific feature. Our primary target is CLI users. SDK users can invoke the audit pipeline directly. |
+
+### Decision log additions
+
+| D# | Decision | Source |
+|---|---|---|
+| D47 | **Claude Code skill as primary audit agent**: Ship `.claude/skills/audit-wiki/SKILL.md`. Zero implementation code — Claude Code's agent loop provides tool access (Read, Grep, Glob, Bash, MCP tools). Phase 9 pipeline is the universal fallback for non-Claude-Code clients. | Loop 10 agent audit exploration 2026-04-11 |
+| D48 | **Skill design: pre-flight + deep review**: Skill runs Phase 9 pipeline via Bash first, then reads actual files to find issues the pipeline misses (terminology inconsistencies, stale info, broken references). Output is a structured findings report. | Loop 10 agent audit exploration 2026-04-11 |
+| D49 | **Standalone tool-use agent deferred**: Document extension point at `src/cli/agent-audit.ts` but do not implement. Requires LlmProvider tool-use extension. Monitor MCP sampling adoption as the preferred future path. | Loop 10 agent audit exploration 2026-04-11 |
+
+---
+
+## Loop 12: Knowledge Lifecycle Features — Confidence Decay, Supersession, Crystallization (2026-04-11)
+
+> **Context**: Pinakes v0.2.0 shipped with 269 tests, 15/15 privacy suite, Phases 0-8 complete, Phase 9 (audit pipeline) and Phase 10 (agent skill) designed. The knowledge wiki is functional but treats all knowledge as equally valid and permanent. The LLM Wiki v2 pattern (Rohit Garg's gist, extending Karpathy's original) proposes a richer memory lifecycle: confidence scoring with decay, supersession tracking, and session crystallization. This loop researches how to add these capabilities.
+>
+> **Team**: Architect (proposes), Challenger (attacks), Researcher (validates). All Opus 4.6.
+>
+> **Mode**: FEATURE MODE — Loop 0 (research) -> Loop 2 (architecture) -> Loop 4 (plan) -> Loop 6 (gap check).
+>
+> **Inspiration**: [LLM Wiki v2 gist](https://gist.github.com/rohitg00/2067ab416f7bbe447c1977edaaa681e2)
+
+### Loop 0: Research Brief
+
+#### Feature 1: Confidence Scoring with Decay
+
+**Current state**: `pinakes_nodes.confidence` is a TEXT column with enum values `'extracted' | 'inferred' | 'ambiguous'`. It is set once at ingest time by `detectConfidence()` in `src/ingest/parse/markdown.ts` based on syntactic heuristics (e.g., files in certain paths are `'inferred'`). It is passed through the retrieval pipeline (FTS, vec, hybrid, RRF fusion) as a metadata field but never used as a ranking signal. The LLM can filter by confidence via code-mode (`results.filter(r => r.confidence === 'extracted')`) but the system itself treats all nodes equally.
+
+`pinakes_nodes.last_accessed_at` exists and is bumped by `touchNodesByChunkIds()` in `src/db/repository.ts` on every search hit. It is intended for personal KG LRU eviction (CLAUDE.md §Database Rules #12) but eviction is not yet implemented — the comment says "eviction is a future concern, not a hot path."
+
+**Research findings — decay functions**:
+
+| Model | Formula | Parameters | Pros | Cons | Source |
+|---|---|---|---|---|---|
+| **Ebbinghaus exponential** | R = e^(-t/S) | S = stability (time unit), t = elapsed time | Simple, well-understood | Oversimplified for our use case — we're not modeling human memory recall | [Wikipedia: Forgetting curve](https://en.wikipedia.org/wiki/Forgetting_curve) |
+| **Power-law decay** | R = (1 + factor * t/S)^(-decay) | S = stability, factor and decay are trainable | More flexible than exponential, matches empirical data better | More complex, needs parameter tuning | [FSRS algorithm](https://github.com/open-spaced-repetition/awesome-fsrs/wiki/The-Algorithm) |
+| **SM-2 ease factor** | EF = EF + (0.1 - (5-q) * (0.08 + (5-q) * 0.02)) | EF = ease factor, q = quality 0-5 | Battle-tested in Anki/SuperMemo, handles reinforcement | Designed for flashcard Q&A, not knowledge provenance | [SuperMemo SM-2](https://www.supermemo.com/en/archives1990-2015/english/ol/sm2) |
+| **FSRS-6 (2024)** | R(t,S) = (1 + factor * t/S)^(-w20), 21 trainable params | S = stability, D = difficulty, G = grade | State of the art for spaced repetition | Way over-engineered for our case — we're not scheduling reviews | [FSRS wiki](https://github.com/open-spaced-repetition/awesome-fsrs/wiki/The-Algorithm) |
+| **Simple half-life decay** | score = base * 0.5^(t/half_life) | base = initial score, half_life = domain-specific constant | Dead simple, one parameter | No reinforcement mechanism built-in | Common in caching systems |
+
+**Research findings — confidence in other KG systems**:
+
+| System | How confidence works | Notes |
+|---|---|---|
+| **obra/knowledge-graph** | No confidence scoring | Pure retrieval, no lifecycle |
+| **basic-memory** | No confidence scoring | Karpathy pattern, no decay |
+| **datarootsio/knowledgebase_guardian** | Uses LLM-assigned confidence per contradiction finding | Per-finding, not per-node |
+| **Obsidian (Ar9av plugin)** | Provenance tags only | Static labels, no decay |
+| **LLM Wiki v2 (Rohit gist)** | "Every fact carries confidence score tracking supporting sources, recency, and contradictions. Starts at 0.85 for single-source claims. Decays via Ebbinghaus curve. Reinforcement resets curve." | Conceptual — no implementation reference |
+
+**Research findings — using confidence in ranking**:
+
+In hybrid search (RRF fusion), confidence could be a third signal alongside FTS rank and vec distance. But this risks burying recently-ingested content that hasn't been corroborated yet. The LLM Wiki v2 gist suggests confidence should affect eviction and audit surfacing, not primary search ranking. The LLM can already filter by confidence via code-mode — making it a server-side ranking signal adds complexity without clear benefit given that the LLM is the precision layer (Phase 7.5 architecture decision).
+
+#### Feature 2: Supersession Tracking
+
+**Current state**: When a wiki file is rewritten, the ingester (`src/ingest/ingester.ts`) deletes all old nodes for that file and inserts new ones. Old content is gone. `pinakes_claims` stores extracted claims but has no history — re-extraction replaces old claims. `pinakes_edges` supports an `edge_kind = 'supersedes'` value but no code populates it.
+
+The contradiction detector (Phase 9) compares claims across files but cannot say "this claim used to say X, now it says Y." The audit report shows current contradictions but not how claims evolved.
+
+**Research findings — supersession approaches**:
+
+| Approach | Mechanism | Storage cost | Query cost | Complexity |
+|---|---|---|---|---|
+| **Soft-delete with versioning** | Add `superseded_by` FK + `superseded_at` timestamp to claims. Old claims kept but marked stale. | ~2x claims table size over time | Simple WHERE filter | Low |
+| **Separate history table** | `pinakes_claims_history` mirrors claims schema + `valid_from`, `valid_until`. On re-extraction, move old to history, insert new. | Unbounded growth | JOIN for temporal queries | Medium |
+| **Event-sourced claims** | Every claim change is an event: `{action: 'create'|'supersede'|'retract', claim_id, ts}`. Current state computed from event replay. | Events grow monotonically | Expensive replay | High — overkill for our scale |
+| **Claim-level edges** | `pinakes_edges` with `edge_kind = 'supersedes'` between old and new claim node IDs. Reuse existing edge infrastructure. | Minimal (one edge per supersession) | Graph traversal | Medium — but claims aren't nodes currently |
+| **Claim versioning in claims table** | Add `version INTEGER`, `prev_claim_id INTEGER` to `pinakes_claims`. On re-extraction, increment version, link to predecessor. | ~1.5x over time (with cleanup) | Self-JOIN | Low-medium |
+
+#### Feature 3: Crystallization (Session Distillation)
+
+**Current state**: No automatic knowledge capture exists. The LLM can manually write to the wiki via `pinakes.project.write(path, content)` inside `execute`, but there is no trigger mechanism, no session boundary detection, and no distillation logic.
+
+The Phase 10 audit skill (`/audit-wiki`) shows the pattern of using Claude Code as the agent runtime. Crystallization could follow the same pattern: a Claude Code skill that runs at session end.
+
+**Research findings — session distillation approaches**:
+
+| Approach | Trigger | Input | Output | Complexity |
+|---|---|---|---|---|
+| **Claude Code skill (post-session)** | User types `/crystallize` or it runs via a hook | Git diff + conversation context (via Claude Code's agent state) | Wiki page(s) summarizing session | Low — same as D47, just a markdown prompt file |
+| **Git hook (post-commit)** | `post-commit` git hook | Git diff of committed files | Wiki page(s) updating relevant knowledge | Medium — needs to call LLM, parse diff |
+| **Chokidar-triggered auto-distill** | File changes detected by existing chokidar watcher | Changed files + existing wiki context | Auto-updated wiki sections | High — runs on every save, noisy |
+| **CLI command** | `pnpm run pinakes -- crystallize` | Git log since last crystallize + file diffs | Session summary wiki page | Low-medium |
+| **Idle-triggered** | No file changes for N minutes (session ended) | Git diff since last crystallize | Wiki page | Medium — fragile heuristic for "session end" |
+
+**Research findings — noise prevention**:
+
+The LLM Wiki v2 gist warns that "automated systems compound errors without human validation gates." Key noise risks:
+- Crystallizing every tiny change (typo fixes, formatting) creates noise
+- LLM-synthesized summaries may hallucinate connections not in the diff
+- Repeated crystallization of the same work (user saves file 10 times during a session)
+
+Mitigations: minimum diff size threshold, deduplication against existing wiki content, `_drafts/` staging area (reuse D43 pattern), human review gate.
+
+### Loop 2: Architecture Decisions (with debate)
+
+#### D50 — Confidence scoring: Simplified half-life decay with corroboration boost
+
+**Architect proposes**: Replace the TEXT `confidence` column with a REAL `confidence_score` column (0.0-1.0) and add two supporting columns:
+
+```sql
+ALTER TABLE pinakes_nodes ADD COLUMN confidence_score REAL NOT NULL DEFAULT 0.7;
+ALTER TABLE pinakes_nodes ADD COLUMN corroboration_count INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE pinakes_nodes ADD COLUMN confidence_updated_at INTEGER NOT NULL DEFAULT 0;
+```
+
+The decay function is a simple half-life model:
+
+```
+effective_confidence = confidence_score * 0.5^(elapsed_days / half_life_days)
+```
+
+Where:
+- `confidence_score` is the base score, set at ingest and boosted by corroboration
+- `half_life_days` depends on the node's `kind`: architecture decisions = 180 days (slow decay), log entries = 30 days (fast decay), sections = 90 days (medium)
+- `corroboration_count` tracks how many independent sources support this node's claims (via `pinakes_claims` cross-referencing)
+- On each access (`last_accessed_at` bump), the score does NOT reset — access is not reinforcement, corroboration is
+
+Score lifecycle:
+1. **Fresh ingest**: score = 0.7 (single-source default)
+2. **Corroborated**: score += 0.1 per additional source, capped at 1.0
+3. **Contradiction found**: score -= 0.2 per active contradiction (from Phase 9 claims comparison)
+4. **Time decay**: computed at query time, never stored (avoids write amplification)
+5. **Personal KG eviction**: sort by `effective_confidence` instead of pure `last_accessed_at`; evict lowest-confidence nodes first when over the 5000-chunk cap
+
+**Challenger attacks**: "You're adding three columns to `pinakes_nodes` for a feature that the LLM can already simulate via code-mode. The LLM can compute `days_since_updated` from `updated_at` and filter on that. The corroboration count is just `SELECT count(*) FROM pinakes_claims WHERE topic LIKE '%' || node_title || '%'`. You're baking heuristics into the schema that will need constant tuning."
+
+**Architect responds**: The Challenger is right that the LLM CAN compute this, but it shouldn't HAVE to on every query. The effective confidence is a pre-computed signal that:
+1. Makes personal KG eviction smarter (the real motivation — pure LRU evicts recently-ingested-but-unread content, which is wrong)
+2. Surfaces in search results so the LLM can make quick decisions without running additional queries
+3. Is cheap to compute (one multiplication at query time)
+
+However, the Challenger's point about schema bloat is valid. **Revised proposal**: keep it minimal.
+
+- Add ONE column: `confidence_score REAL DEFAULT 0.7` (replaces the TEXT `confidence` enum — the enum values map to numeric scores: extracted=0.7, inferred=0.5, ambiguous=0.3)
+- Time decay is computed at query time in the SQL: `confidence_score * power(0.5, (julianday('now') - julianday(updated_at/1000, 'unixepoch')) / half_life_days)` — but SQLite doesn't have `power()`. Use the identity: `0.5^x = exp(-0.693 * x)`, and SQLite does NOT have `exp()` either without an extension.
+- **Key realization**: SQLite lacks `exp()` and `power()`. Computing decay in SQL requires either a user-defined function or computing it in JS after the query.
+
+**Challenger attacks again**: "So you can't even compute this in the database. You'll compute it in JS post-query. At that point, why store anything extra? Just compute `(Date.now() - node.updated_at) / HALF_LIFE_MS` in the sandbox binding and multiply by the confidence enum value. Zero schema change needed."
+
+**Architect responds**: The Challenger makes a strong point. The decay computation is trivial JS. But `corroboration_count` is not — it requires a claims cross-reference that's expensive to compute per-query. And for personal KG eviction (the motivating use case), we need a pre-computed score that the eviction query can ORDER BY without joining through claims.
+
+**Resolution**: 
+
+1. **Add `confidence_score REAL DEFAULT 0.7`** — replaces the TEXT confidence enum. The existing code paths that read `confidence` as a string get a migration that maps `'extracted' -> 0.7, 'inferred' -> 0.5, 'ambiguous' -> 0.3`. New code uses the numeric score.
+2. **Decay is computed in JS, not SQL** — the sandbox binding (`pinakes.project.hybrid()`, `pinakes.project.fts()`, etc.) enriches each result with `effective_confidence` computed as `confidence_score * Math.pow(0.5, days_elapsed / half_life_days)`. Half-life is configurable per-node-kind via a lookup table in the binding code.
+3. **Corroboration is a background job, not a query-time join** — a periodic `updateCorroboration()` function (called during ingest or audit) counts claims per node and bumps `confidence_score`. Stored, not computed per-query.
+4. **Personal KG eviction uses `confidence_score * recency_factor`** — combining the stored confidence with a time-based factor, replacing pure LRU.
+
+**Decision**: D50 — Numeric confidence score (one new REAL column) with JS-computed decay at query time and background corroboration updates.
+
+| Aspect | Current (TEXT enum) | Proposed (REAL score + JS decay) |
+|---|---|---|
+| Schema change | None | One ALTER TABLE ADD COLUMN |
+| Query-time cost | Zero | ~0.1ms JS computation per result |
+| Eviction quality | Pure LRU (wrong for unread-but-new content) | Confidence-weighted (correct) |
+| LLM signal | String filter only | Numeric comparison + sorting |
+| Migration risk | N/A | Low — additive column, backfill is a single UPDATE |
+
+#### D51 — Supersession: Claim versioning with soft-delete
+
+**Architect proposes**: Extend `pinakes_claims` with version tracking:
+
+```sql
+ALTER TABLE pinakes_claims ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE pinakes_claims ADD COLUMN superseded_by INTEGER REFERENCES pinakes_claims(id) ON DELETE SET NULL;
+ALTER TABLE pinakes_claims ADD COLUMN superseded_at INTEGER;
+```
+
+When `extractAllClaims()` re-extracts claims for a file:
+1. Instead of `DELETE FROM pinakes_claims WHERE source_uri = ?`, mark old claims as superseded: set `superseded_at = now`, `superseded_by = new_claim_id` (matched by topic similarity)
+2. Insert new claims with `version = old_version + 1`
+3. Matching old-to-new claims uses topic equality (exact match) + claim embedding similarity for fuzzy matching
+
+This enables:
+- "What changed?" queries: `SELECT old.claim, new.claim FROM pinakes_claims old JOIN pinakes_claims new ON old.superseded_by = new.id WHERE old.topic = ?`
+- Audit reports showing claim evolution: "Previously said X (from auth.md, 2026-04-01), now says Y (from auth.md, 2026-04-11)"
+- Temporal queries: "What did the wiki say about authentication two weeks ago?"
+
+**Challenger attacks**: "Matching old claims to new claims is the hard problem. If a file is rewritten significantly, the topics may shift, claims may be split or merged. Your `superseded_by` FK assumes a 1:1 correspondence that doesn't exist for major rewrites."
+
+**Architect responds**: Fair. The matching is best-effort, not guaranteed. For minor updates (the common case — one fact changes), topic equality + claim similarity works well. For major rewrites, we fall back to: mark all old claims as superseded (without a specific successor), insert all new claims as v1. The `superseded_by` FK is nullable — `NULL` means "this claim was retired, we don't know what replaced it."
+
+**Challenger attacks again**: "How much history do you keep? If a file is rewritten weekly for 6 months, you'll have 26 versions of each claim. The claims table grows without bound."
+
+**Architect responds**: Good catch. Add a retention policy: keep at most `MAX_CLAIM_VERSIONS` (default 5) per topic per source_uri. On insert, if the chain exceeds the limit, hard-delete the oldest superseded claims. This bounds growth at ~5x the active claim count.
+
+**Decision**: D51 — Claim versioning via soft-delete with `superseded_by` FK, bounded at 5 versions per topic per file.
+
+| Aspect | Current (delete + reinsert) | Proposed (soft-delete + version chain) |
+|---|---|---|
+| Schema change | None | Three ALTER TABLE ADD COLUMN on pinakes_claims |
+| History | None | Up to 5 versions per claim per file |
+| "What changed?" | Impossible | Simple JOIN query |
+| Audit integration | Shows current contradictions only | Shows evolution of contradictions over time |
+| Storage growth | Bounded (only current claims) | Bounded (5x current claims max) |
+| Migration risk | N/A | Low — additive columns, existing claims get version=1 |
+
+#### D52 — Crystallization: Claude Code skill with CLI fallback
+
+**Architect proposes**: Follow the D47 pattern — ship a Claude Code skill at `.claude/skills/crystallize/SKILL.md` that:
+1. Reads `git diff` (or `git log --since` if given a timeframe) to identify what changed
+2. Reads the changed files and existing wiki context via MCP tools
+3. Synthesizes wiki entries summarizing decisions made, lessons learned, and knowledge gained
+4. Writes draft pages to `_crystallize-drafts/` via Bash (not directly to wiki — matches D43 report-first pattern)
+5. Optionally promotes drafts to wiki via `pinakes.project.write()` if the user confirms
+
+Additionally, a CLI command `pnpm run pinakes -- crystallize` provides the universal fallback for non-Claude-Code clients, using the LLM provider factory (D36).
+
+**Challenger attacks**: "This is just a fancy git-diff summarizer. How is it different from `git log --oneline`? The value is supposed to be distilling DECISIONS and LEARNINGS, not just listing file changes."
+
+**Architect responds**: The skill prompt is the differentiator. It doesn't just list changes — it asks:
+1. "What architectural decisions were made in this session? (e.g., chose library X over Y, decided on pattern Z)"
+2. "What was learned that should be remembered for future sessions? (e.g., gotcha with API X, workaround for bug Y)"
+3. "What existing wiki pages should be updated based on this session's work?"
+
+The git diff is the INPUT, not the output. The LLM synthesizes from the diff + existing wiki context.
+
+**Challenger attacks again**: "What about noise? A session with 50 files changed (refactoring) will produce a massive diff that overwhelms the LLM's context window."
+
+**Architect responds**: The skill prompt handles this:
+1. Filter diff to significant changes only (exclude test files, generated files, lockfiles by default — configurable)
+2. Summarize large diffs before detailed analysis (two-pass: first get overview, then drill into interesting changes)
+3. Minimum diff size: skip if fewer than 10 lines changed (configurable)
+4. Maximum diff size: if diff exceeds 50K tokens, take only the most recently modified files up to the limit
+
+**Challenger accepts**: "The skill approach is correct. Zero implementation code for Claude Code users, CLI fallback for others. The prompt engineering is the hard part but it's iteratable."
+
+**Decision**: D52 — Crystallization as a Claude Code skill + CLI fallback. Drafts go to `_crystallize-drafts/`, not wiki root. Prompt handles noise via diff filtering and two-pass summarization.
+
+| Aspect | Skill approach | CLI approach |
+|---|---|---|
+| Trigger | User types `/crystallize` | User runs `pnpm run pinakes -- crystallize` |
+| Agent runtime | Claude Code (battle-tested) | Internal LlmProvider tool-use (D49-level effort) |
+| Tool access | Full (Read, Grep, Glob, Bash, MCP) | LlmProvider.complete() + file I/O |
+| Implementation effort | ~0 (markdown prompt file) | ~300-500 LOC for diff parsing + LLM orchestration |
+| Quality | Excellent (Claude reads actual files) | Good (but limited to LLM provider quality) |
+| Client support | Claude Code only | Universal |
+
+#### D53 — Half-life configuration per node kind
+
+**Decision**: The decay half-life is not a single global constant but varies by content type:
+
+| Node kind | Half-life (days) | Rationale |
+|---|---|---|
+| `'section'` (default) | 90 | General wiki content, medium decay |
+| `'decision'` | 180 | Architecture decisions are long-lived |
+| `'log_entry'` | 30 | Session logs decay fast |
+| `'gap'` | 60 | Gaps are actionable items, moderate urgency |
+| `'entity'` | 120 | Named entities (tools, libs) are semi-stable |
+
+Configurable via `PINAKES_DECAY_HALF_LIFE_DEFAULT` env var (overrides all kinds) or per-kind via `pinakes_meta` key `decay_half_life:<kind>`.
+
+The half-life lookup table lives in `src/gate/confidence.ts` (new module), NOT in the schema. Schema stores the base `confidence_score`; the decay computation happens in JS.
+
+#### D54 — Interaction between features: confidence drives eviction, supersession feeds confidence, crystallization creates high-confidence nodes
+
+**Decision**: The three features form a virtuous cycle:
+
+1. **Supersession -> Confidence**: When a claim is superseded, the old claim's node gets a confidence penalty (the node has stale information). The new claim's node gets a slight boost (it's more current). This is computed during `extractAllClaims()` when version chains are created.
+
+2. **Confidence -> Eviction**: Personal KG eviction (5000-chunk cap) sorts by `effective_confidence` (base score * time decay) instead of pure `last_accessed_at`. Low-confidence, old, uncorroborated nodes are evicted first. High-confidence, recently-corroborated nodes survive.
+
+3. **Crystallization -> High-confidence nodes**: Wiki pages created by crystallization start with `confidence_score = 0.8` (higher than the 0.7 default) because they are synthesized from multiple sources (the session's actual file changes). They also link back to source files via wikilinks, increasing their corroboration count over time.
+
+4. **Confidence -> Search surfacing**: The `effective_confidence` is included in search results as a metadata field. The LLM can use it for triage: "This result has confidence 0.92 (well-corroborated, recent) vs this one at 0.31 (old, single-source, decayed)."
+
+### Loop 4: Phased Implementation Plan
+
+**Recommendation**: These three features should be **one phase (Phase 11)** split into three sub-phases, because they share schema migration work and the confidence scoring is a prerequisite for the other two to deliver their full value.
+
+| Sub-phase | Feature | Effort | LLM calls | Depends on |
+|---|---|---|---|---|
+| **11.1** | Confidence scoring + decay | 1 day | 0 | Phase 9 (claims table exists) |
+| **11.2** | Supersession tracking | 1 day | 0 (runs during existing claim extraction) | Phase 11.1 (confidence_score column exists) |
+| **11.3** | Crystallization skill + CLI | 1/2 day (skill) + 1 day (CLI) | 1-5 per crystallize run | Phase 11.1 (confidence_score for new nodes) |
+
+**Total**: ~3.5 days.
+
+**Integration with existing phases**:
+- Phase 9 (claims extraction) gains supersession tracking in 11.2 — `extractAllClaims()` is modified to soft-delete instead of hard-delete
+- Phase 10 (audit skill) gains confidence-based findings in 11.1 — "these nodes have decayed confidence, consider reviewing"
+- Phase 5 (personal KG) gains confidence-weighted eviction in 11.1 — replaces the TODO LRU eviction
+- Phase 7.5 (search) gains `effective_confidence` metadata in 11.1 — enriches search results
+
+### Loop 6: Gap Analysis
+
+| # | Gap | Severity | Mitigation |
+|---|---|---|---|
+| G24 | **`confidence` TEXT -> REAL migration**: Existing code reads `confidence` as a string (`r.confidence === 'extracted'`). Every call site needs updating. Sandbox bindings expose confidence as a string in the type declarations. Code-mode callers that filter on string values will break. | **High** | Keep BOTH columns during transition: add `confidence_score REAL` alongside existing `confidence TEXT`. Deprecate the TEXT column but don't remove it until v1. Update bindings to expose both `confidence` (string, deprecated) and `confidence_score` (number). Backfill: `UPDATE pinakes_nodes SET confidence_score = CASE confidence WHEN 'extracted' THEN 0.7 WHEN 'inferred' THEN 0.5 WHEN 'ambiguous' THEN 0.3 ELSE 0.7 END`. |
+| G25 | **SQLite lacks `exp()` and `power()`**: Cannot compute decay in SQL ORDER BY. Must compute in JS post-query, which means the DB can't sort by effective_confidence for eviction. | Medium | For eviction, pre-compute and store `effective_confidence` periodically (e.g., on startup, on audit). For query-time, compute in the JS binding layer after fetching results. This is fine because we always post-process results anyway (RRF fusion, budget gate). |
+| G26 | **Claim matching for supersession is fuzzy**: When a file is rewritten, matching old claims to new claims requires topic equality + semantic similarity. False matches create wrong supersession chains. | Medium | Use strict topic equality as the primary match key. Only attempt semantic matching (via embedder) as a secondary signal for claims with the same topic but different wording. If similarity < 0.8, don't link — just mark old as superseded without a successor. Accept that major rewrites will produce "orphaned supersessions" (old claims retired without specific successors). |
+| G27 | **Unbounded claim history growth**: Even with the 5-version cap per topic per file, a wiki with 200 topics across 20 files could accumulate 200 * 20 * 5 = 20,000 historical claims. | Low | 20K rows in SQLite is trivial (< 1MB). The real cost is query complexity for temporal views. Add a `pinakes -- claims-cleanup` CLI command that hard-deletes superseded claims older than N days (default 180). |
+| G28 | **Crystallization quality depends entirely on prompt engineering**: Bad prompts produce noise (vague summaries, hallucinated decisions). No programmatic quality gate. | Medium | Ship to `_crystallize-drafts/` (never directly to wiki). The user or a reviewing agent must explicitly promote drafts. Include a quality checklist in the draft header. The skill prompt should instruct the LLM to be conservative: "Only record decisions and learnings that are clearly supported by the diff. When uncertain, omit rather than speculate." |
+| G29 | **Confidence decay may confuse the LLM**: A node with `effective_confidence: 0.35` (decayed from 0.7 over 6 months) may be perfectly valid content that just hasn't been updated. The LLM might mistakenly deprioritize it. | Low | Include `days_since_update` alongside `effective_confidence` in search results so the LLM can distinguish "low confidence because old" from "low confidence because contradicted." Update tool descriptions to explain the confidence model. |
+| G30 | **Crystallization triggers during active coding sessions could be disruptive**: If the skill runs mid-session, it may capture incomplete work. | Low | The skill is manual-trigger only (`/crystallize`). No automatic triggers. The CLI version requires explicit invocation. Document that crystallization is best run at session end, not mid-session. |
+| G31 | **Backward compatibility of confidence_score with existing tests**: 269 existing tests may reference `confidence: 'extracted'` string comparisons. | Medium | The transition keeps the TEXT column alive (G24 mitigation). Tests that check `confidence === 'extracted'` continue to pass. New tests use `confidence_score >= 0.7`. Deprecation warnings in Phase 12 or v1. |
+
+### Decision log additions
+
+| D# | Decision | Source |
+|---|---|---|
+| D50 | **Numeric confidence score**: Add `confidence_score REAL DEFAULT 0.7` to `pinakes_nodes`. Decay computed in JS at query time via `score * Math.pow(0.5, days_elapsed / half_life)`. Corroboration updates stored score during ingest/audit. Replaces pure LRU with confidence-weighted eviction for personal KG. TEXT `confidence` column preserved for backward compat. | Loop 12 knowledge lifecycle 2026-04-11 |
+| D51 | **Claim supersession via soft-delete**: Add `version`, `superseded_by`, `superseded_at` to `pinakes_claims`. Re-extraction soft-deletes old claims instead of hard-deleting. Bounded at 5 versions per topic per file. Enables "what changed?" temporal queries and audit report evolution tracking. | Loop 12 knowledge lifecycle 2026-04-11 |
+| D52 | **Crystallization as Claude Code skill + CLI**: Skill at `.claude/skills/crystallize/SKILL.md` distills git diffs into wiki draft pages. CLI fallback via `pnpm run pinakes -- crystallize`. Drafts to `_crystallize-drafts/`, never wiki root directly. Prompt handles noise via diff filtering and two-pass summarization. | Loop 12 knowledge lifecycle 2026-04-11 |
+| D53 | **Per-kind decay half-lives**: section=90d, decision=180d, log_entry=30d, gap=60d, entity=120d. Configurable via env var or `pinakes_meta`. Lookup table in `src/gate/confidence.ts`. | Loop 12 knowledge lifecycle 2026-04-11 |
+| D54 | **Feature interaction cycle**: Supersession feeds confidence (stale claim = confidence penalty). Confidence drives eviction (low effective_confidence evicted first). Crystallization creates high-confidence nodes (0.8 base). Confidence surfaces in search results for LLM triage. | Loop 12 knowledge lifecycle 2026-04-11 |
+
+---
+
 ## Sources
 
 See `dev-docs/research-brief.md` for the full 85+ URL inventory from Loop 0. Key pointers:
@@ -692,3 +1402,6 @@ See `dev-docs/research-brief.md` for the full 85+ URL inventory from Loop 0. Key
 - **SQLite**: [sqlite.org/fts5](https://www.sqlite.org/fts5.html), [sqlite-vec](https://github.com/asg017/sqlite-vec), [Alex Garcia hybrid RRF blog](https://alexgarcia.xyz/blog/2024/sqlite-vec-hybrid-search/)
 - **Claude Code 25K cap**: [community discussion 169224](https://github.com/orgs/community/discussions/169224)
 - **MCP spec**: [2025-11-25 changelog](https://modelcontextprotocol.io/specification/2025-11-25/changelog), [typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk)
+- **Contradiction detection (Loop 8)**: [datarootsio/knowledgebase_guardian](https://github.com/datarootsio/knowledgebase_guardian), [arxiv 2504.00180 — RAG contradiction detection](https://arxiv.org/abs/2504.00180), [Stanford NLP contradiction detection](https://nlp.stanford.edu/pubs/contradiction-acl08.pdf), [Springer formal logic + LLMs](https://link.springer.com/article/10.1007/s10515-024-00452-x), [ACL 2025 factual inconsistency detection](https://aclanthology.org/2025.findings-acl.1305.pdf)
+- **Agent audit exploration (Loop 10)**: [Claude Code skills docs](https://code.claude.com/docs/en/skills), [Anthropic skills repo](https://github.com/anthropics/skills), [MCP sampling spec 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/client/sampling), [MCP sampling client support issue](https://github.com/anthropics/claude-code/issues/1785), [MCP 2026 roadmap](https://blog.modelcontextprotocol.io/posts/2026-mcp-roadmap/), [RepoAudit — LLM agent for code auditing](https://arxiv.org/html/2501.18160v1), [Claude Code subagents docs](https://code.claude.com/docs/en/sub-agents), [MCP sampling attack vectors](https://unit42.paloaltonetworks.com/model-context-protocol-attack-vectors/)
+- **Knowledge lifecycle (Loop 12)**: [LLM Wiki v2 gist (Rohit Garg)](https://gist.github.com/rohitg00/2067ab416f7bbe447c1977edaaa681e2), [Wikipedia: Forgetting curve](https://en.wikipedia.org/wiki/Forgetting_curve), [Wikipedia: Spaced repetition](https://en.wikipedia.org/wiki/Spaced_repetition), [FSRS algorithm](https://github.com/open-spaced-repetition/awesome-fsrs/wiki/The-Algorithm), [Karpathy LLM-Wiki gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)

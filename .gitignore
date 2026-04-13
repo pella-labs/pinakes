@@ -11,6 +11,9 @@ coverage/
 *.db-journal
 *.db-wal
 *.db-shm
+:memory:
+:memory:-shm
+:memory:-wal
 
 # Pinakes — allow wiki and .gitignore to be committed, ignore everything else
 .pinakes/*

@@ -85,6 +85,7 @@ interface TaggedResult {
   source_uri: string;
   score: number;
   confidence: string;
+  effective_confidence?: number;
   title: string | null;
   section_path: string;
   source_scope?: 'project' | 'personal';
@@ -143,7 +144,7 @@ export function makeSearchHandler(deps: SearchDeps) {
         : hitLists[0];
       const tagged: TaggedResult[] = merged.map((h) => ({
         id: h.id, text: h.text, source_uri: h.source_uri, score: h.score,
-        confidence: h.confidence, title: h.title, section_path: h.section_path,
+        confidence: h.confidence, effective_confidence: h.effective_confidence, title: h.title, section_path: h.section_path,
         ...(scope === 'both' ? { source_scope: 'project' as const } : {}),
       }));
       allHits.push(...tagged);
@@ -159,7 +160,7 @@ export function makeSearchHandler(deps: SearchDeps) {
         : hitLists[0];
       const tagged: TaggedResult[] = merged.map((h) => ({
         id: h.id, text: h.text, source_uri: h.source_uri, score: h.score,
-        confidence: h.confidence, title: h.title, section_path: h.section_path,
+        confidence: h.confidence, effective_confidence: h.effective_confidence, title: h.title, section_path: h.section_path,
         ...(scope === 'both' ? { source_scope: 'personal' as const } : {}),
       }));
       allHits.push(...tagged);

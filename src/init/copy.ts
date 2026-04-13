@@ -27,13 +27,24 @@ export function copyMarkdownToWiki(
 ): CopyResult {
   const result: CopyResult = { files_copied: 0, files_skipped: 0, total_bytes: 0 };
 
+  const resolvedWikiRoot = resolve(wikiRoot);
+
   for (const absPath of files) {
+    const resolvedSource = resolve(absPath);
+
+    // Safety: never copy a file that is already inside the wiki root
+    if (resolvedSource.startsWith(resolvedWikiRoot + '/') || resolvedSource === resolvedWikiRoot) continue;
+
     const rel = relative(projectRoot, absPath);
 
     // Safety: skip files that resolve outside the project root
     if (rel.startsWith('..')) continue;
 
     const target = resolve(wikiRoot, rel);
+
+    // Safety: target must be inside wiki root (prevent path traversal)
+    const resolvedTarget = resolve(target);
+    if (!resolvedTarget.startsWith(resolvedWikiRoot + '/')) continue;
 
     if (existsSync(target)) {
       result.files_skipped++;

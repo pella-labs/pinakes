@@ -734,9 +734,11 @@ Phase 0 (Scaffold) ✅
                                 └── Phase 7 (Polish + MVP ship) ✅
                                      └── Phase 7.5 (Recall-optimized search)
                                           └── Phase 8 (v1 stretch)
+                                               └── Phase 9 (audit-wiki v2)
+                                                    └── 9.1 → 9.2 → 9.3 → 9.4 → 9.5
 ```
 
-**Critical path**: 0 → 1 → 2 → 3 → 4 → 4.5 → 5 → 6 → 7 → 7.5. **MVP phases (0-7) complete.** Phase 7.5 is a search quality refinement based on ablation testing.
+**Critical path**: 0 → 1 → 2 → 3 → 4 → 4.5 → 5 → 6 → 7 → 7.5. **MVP phases (0-7) complete.** Phase 7.5 is a search quality refinement based on ablation testing. Phase 9 redesigns audit-wiki (presearch D41-D46).
 
 **Parallelization opportunity**: after Phase 2, Phase 3 (sandbox bindings) and Phase 4 (retrieval implementation) can be partially parallel — they share the `KGSide` interface but touch different files.
 
@@ -783,16 +785,644 @@ Every brief requirement mapped to a phase and test:
 | E (full) | Gap detection (write loop) | **CORE** (promoted by D35) | P4.5 + P6 | write binding + gap lifecycle tests |
 | F (CUT→STRETCH) | Time-travel on log replay | STRETCH | P8 | deferred to v1 presearch; now feasible since we own the log format |
 | G | Personal KG skill observations | STRETCH | P8 | deferred to v1 presearch |
-| **H (NEW)** | Contradiction detector (pairwise LLM judge over wiki chunks with opposing claims) | **STRETCH innovation** | P8 | deferred to v1 presearch; genuinely novel vs obra/knowledge-graph + basic-memory |
+| **H (REDESIGNED)** | Contradiction detector — topic-clustered claim extraction + cross-file comparison (replaces pairwise LLM judge per D41) | **STRETCH innovation** | P9 | 31+ tests across Phase 9.1-9.5; contradictions found on fixture with known inconsistencies |
 
-**Final: 4 CORE innovations + 2 CORE baselines + 3 STRETCH innovations, 1 cut.**
+| **I** | Confidence scoring with time decay — numeric confidence_score, Ebbinghaus-inspired half-life decay, corroboration boost, contradiction penalty (D50, D53) | **STRETCH innovation** | P11.1 | effective_confidence in search results; confidence-weighted eviction replaces LRU; 12+ tests |
+| **J** | Supersession tracking — claim versioning with soft-delete, "what changed?" temporal queries, bounded version chains (D51) | **STRETCH innovation** | P11.2 | claim evolution in audit report; version chain queries work; 10+ tests |
+| **K** | Crystallization — session distillation via Claude Code skill + CLI, draft staging area, elevated confidence for crystallized nodes (D52) | **STRETCH innovation** | P11.3 | drafts from git diffs; promotion to wiki; 8+ tests |
+
+**Final: 4 CORE innovations + 2 CORE baselines + 6 STRETCH innovations, 1 cut.**
+
+---
+
+### Phase 9 — audit-wiki v2 (contradiction detection + gap filtering + progress)
+
+**Goal**: Replace the ineffective contradiction detector, noisy gap detector, and empty stub generator with a production-quality wiki audit pipeline. Addresses problems P1-P4 identified in presearch.md Loop 8.
+
+**Depends on**: Phase 8 (existing audit-wiki infrastructure, LLM provider D36).
+
+**Effort**: ~3 days.
+
+**Key architectural decisions**: D41 (topic-clustered claims), D42 (two-tier gaps), D43 (report-first), D44 (progress), D45 (claims table), D46 (report format). See presearch.md Loop 8.
+
+---
+
+#### Phase 9.1 — Progress framework + improved syntactic gap filter
+
+**Goal**: Fix P4 (no progress feedback) and tighten the syntactic gap pre-filter to reduce noise input for Phase 9.4.
+
+**Effort**: 1/2 day.
+
+##### Requirements
+
+- [ ] `src/cli/progress.ts` — Progress reporter utility:
+  - `startPhase(name: string, total: number)` — prints phase header with count
+  - `tick(label: string, detail?: string)` — prints `[n/total] label — detail` with elapsed time
+  - `endPhase(summary: string)` — prints phase summary with total elapsed
+  - Output goes to `process.stderr` (does not interfere with structured output or piping)
+  - Optional `quiet` mode that suppresses progress (for testing / non-TTY)
+- [ ] Wire progress reporter into `auditWikiCommand()` for all three phases
+- [ ] Improve `isRealGap()` in `src/cli/audit-wiki.ts`:
+  - Raise `MIN_TOPIC_LENGTH` from 4 to 5
+  - Reject all single-word topics that are not capitalized or don't look like proper nouns/acronyms (e.g., reject "window", "command", "instead"; keep "OAuth2", "PostgreSQL", "Docker")
+  - Expand stopword list with common technical terms that are not real topics: "example", "section", "configuration", "implementation", "method", "function", "parameter", "argument", "option", "value", "result", "output", "input", "error", "warning", "status", "type", "string", "number", "boolean", "object", "array", "list", "file", "path", "name", "version", "update", "change", "create", "delete", "read", "write", "server", "client", "request", "response"
+  - Add code-pattern rejection: reject topics that match `^[a-z]+[A-Z]` (camelCase), `^[A-Z_]+$` (SCREAMING_SNAKE), or contain `.` (likely qualified names)
+- [ ] Add elapsed-time tracking to each LLM call in `contradictionScan` and gap filtering
+
+##### Tests (minimum 5)
+- [ ] Progress reporter prints correct `[n/total]` format
+- [ ] Progress reporter respects `quiet` mode
+- [ ] Improved `isRealGap` rejects "window", "command", "description", "instead"
+- [ ] Improved `isRealGap` accepts "OAuth2", "Docker", "PostgreSQL", multi-word topics
+- [ ] Improved `isRealGap` rejects camelCase identifiers and SCREAMING_SNAKE
+
+##### Acceptance criteria
+1. `audit-wiki` prints phase headers and per-item progress on stderr
+2. Gap candidate count reduced by >= 50% on existing fixture data vs. old filter
+
+---
+
+#### Phase 9.2 — Topic-claim extraction (contradiction Phase A)
+
+**Goal**: Replace the pairwise LLM judge with per-file topic-claim extraction per D41.
+
+**Effort**: 1 day.
+
+##### Requirements
+
+- [ ] `src/cli/claims.ts` — Claim extraction module:
+  - `extractClaimsFromFile(content: string, sourceUri: string, llmProvider: LlmProvider): Promise<ExtractedClaim[]>`
+  - Prompt instructs LLM to return JSON: `{ topics: [{ topic: string, claims: string[] }] }`
+  - Parse LLM response with fallback (extract JSON from surrounding text, like `parseJudgment`)
+  - Each claim is paired with its source_uri for provenance
+  - `ExtractedClaim = { topic: string, claim: string, source_uri: string }`
+- [ ] Drizzle migration for `pinakes_claims` table (D45):
+  ```sql
+  CREATE TABLE pinakes_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,
+    source_uri TEXT NOT NULL,
+    chunk_id TEXT,
+    topic TEXT NOT NULL,
+    claim TEXT NOT NULL,
+    extracted_at INTEGER NOT NULL,
+    FOREIGN KEY (chunk_id) REFERENCES pinakes_chunks(id) ON DELETE SET NULL
+  );
+  CREATE INDEX idx_claims_topic ON pinakes_claims(scope, topic);
+  CREATE INDEX idx_claims_source ON pinakes_claims(scope, source_uri);
+  ```
+- [ ] Incremental extraction: before extracting from a file, check if `source_sha` in `pinakes_nodes` matches the sha at last extraction time. Skip unchanged files. Store `extracted_at` timestamp per source_uri in `pinakes_meta`.
+- [ ] Topic normalization prompt guidance: instruct LLM to "Use the most canonical, commonly-used name for each topic. Prefer full names over abbreviations. Group related subtopics under their parent topic."
+- [ ] Persist extracted claims to `pinakes_claims` table after successful extraction
+- [ ] Progress: print `[n/total] filename — X topics, Y claims` per file
+- [ ] Error handling: if LLM call fails for a file, log warning and continue with remaining files
+
+##### Tests (minimum 8)
+- [ ] Claim extraction parses valid LLM JSON response
+- [ ] Claim extraction handles JSON wrapped in markdown code fences
+- [ ] Claim extraction handles malformed LLM response gracefully (returns empty)
+- [ ] Claims persisted to `pinakes_claims` table
+- [ ] Incremental skip: unchanged file (same source_sha) not re-extracted
+- [ ] Changed file triggers re-extraction (old claims deleted, new inserted)
+- [ ] Progress output shows correct file count
+- [ ] Multiple files produce claims with correct source_uri provenance
+
+##### Acceptance criteria
+1. LLM extracts topics and claims from fixture wiki files
+2. Claims persisted to DB with correct provenance
+3. Incremental extraction skips unchanged files
+4. Progress printed per file
+
+---
+
+#### Phase 9.3 — Cross-file contradiction comparison (Phase B) + topic dedup
+
+**Goal**: Compare claims across files to find contradictions, with embedding-based topic dedup per D41.
+
+**Effort**: 1/2 day.
+
+##### Requirements
+
+- [ ] Topic dedup via embeddings:
+  - Collect all unique topic strings from `pinakes_claims`
+  - Embed each topic string using the configured embedder
+  - Compute pairwise cosine similarity; merge topics with similarity > 0.85 (configurable via `--topic-similarity` flag)
+  - Result: map from canonical topic -> set of merged variant topics
+- [ ] `src/cli/contradiction.ts` — rewrite `contradictionScan`:
+  - Replace `findCandidatePairs` with topic-grouped claim comparison
+  - For each canonical topic with claims from 2+ source files:
+    - Collect all claims about that topic across files
+    - Send to LLM: "Here are claims about [topic] from different files in a knowledge wiki. Identify any contradictions. Return JSON: `{ contradictions: [{ claim_a: string, source_a: string, claim_b: string, source_b: string, explanation: string, confidence: 'high'|'medium' }] }`"
+  - Deduplicate results (same claim pair from different orderings)
+- [ ] Updated `ContradictionResult` type:
+  - Add `topics_scanned: number` (number of topic groups compared)
+  - Add `claims_extracted: number` (total claims in the DB)
+  - Each `Contradiction` now includes `topic: string` for grouping context
+- [ ] Progress: print `[n/total] topic — X claims from Y files — Z contradictions` per topic group
+- [ ] Rate limit preserved: check `last_contradiction_scan` in `pinakes_meta`
+
+##### Tests (minimum 7)
+- [ ] Topic dedup merges "OAuth2" and "OAuth 2.0" with cosine > 0.85
+- [ ] Topic dedup does NOT merge "authentication" and "authorization" (distinct concepts)
+- [ ] Claims from 2+ files grouped correctly by canonical topic
+- [ ] LLM contradiction response parsed correctly
+- [ ] Single-file topic groups are skipped (no self-contradiction check)
+- [ ] Contradiction includes topic name for context
+- [ ] Progress output shows correct topic group count
+
+##### Acceptance criteria
+1. Contradictions found on fixture data with known inconsistencies
+2. Topic dedup reduces redundant comparisons
+3. Each contradiction includes topic context and source provenance
+
+---
+
+#### Phase 9.4 — LLM gap filter + graph topology + report generation
+
+**Goal**: Replace noisy gap list with LLM-filtered actionable gaps, add graph topology signals, generate the restructured audit report per D42, D46.
+
+**Effort**: 1/2 day.
+
+##### Requirements
+
+- [ ] LLM gap filter in `src/cli/audit-wiki.ts`:
+  - After syntactic gap detection, collect all unresolved gaps
+  - Batch into groups of 50 (configurable) and send to LLM: "Here is a list of terms extracted from a technical knowledge wiki. Which of these represent real documentation topics that would benefit from a dedicated wiki page? Return only the real topics as a JSON array of strings. Filter out common words, code syntax, generic terms, and terms that are too specific to be standalone pages."
+  - Only keep gaps that survive the LLM filter
+  - Fall back to syntactic-only if LLM is unavailable
+- [ ] Graph topology gap signals:
+  - Query `pinakes_edges` for nodes with high in-degree (wikilink edge kind) that have no dedicated page
+  - These are strong gap candidates — many pages link to them but no page defines them
+  - Add to gap list with `source: 'graph-topology'` indicator
+- [ ] Context gathering for each confirmed gap:
+  - Query `pinakes_chunks` FTS for the gap topic
+  - Collect top 5 mentioning chunks with their source_uri
+  - Include in the audit report as "What the wiki already says about [topic]"
+- [ ] Restructured audit report (`_audit-report.md`) per D46:
+  - Section 1: Contradictions (grouped by topic, with source references and conflicting claims)
+  - Section 2: Documentation Gaps (LLM-filtered, with context summaries from existing mentions)
+  - Section 3: Health Metrics (file count, chunk count, topic coverage percentage, orphan pages, stale pages)
+- [ ] Progress: print gap filtering progress and report generation status
+
+##### Tests (minimum 6)
+- [ ] LLM filter reduces gap count (mock LLM returns subset of input)
+- [ ] LLM filter fallback: disabled LLM -> syntactic-only gaps still reported
+- [ ] Graph topology identifies high-in-degree nodes without dedicated pages
+- [ ] Context gathering returns relevant chunk excerpts for a gap topic
+- [ ] Audit report contains all three sections (contradictions, gaps, health)
+- [ ] Health metrics include correct file and chunk counts
+
+##### Acceptance criteria
+1. Gap count reduced by >= 80% vs. old syntactic-only approach on fixture data
+2. Audit report is actionable (contradictions have source refs, gaps have context)
+3. Health metrics section populated correctly
+
+---
+
+#### Phase 9.5 — Opt-in synthesis stubs + final testing
+
+**Goal**: Implement opt-in stub generation with synthesis from context per D43. Full integration testing.
+
+**Effort**: 1/2 day.
+
+##### Requirements
+
+- [ ] `--generate-stubs` flag on `audit-wiki` command
+- [ ] When enabled, for each LLM-filtered gap:
+  - Gather all mentioning chunks (top 10 by relevance)
+  - Send to LLM: "Based on the following excerpts from a knowledge wiki, write a concise wiki page about [topic]. Include only facts present in the excerpts. Mark any inferences with '(inferred)'. Format as markdown with a title, summary paragraph, and relevant details."
+  - Write to `<wikiRoot>/_audit-drafts/<slug>.md` (not wiki root)
+- [ ] Create `_audit-drafts/` directory if it doesn't exist
+- [ ] Append `_audit-drafts/` to `.pinakes/.gitignore` if not already present
+- [ ] Audit report includes a "Generated Drafts" section with file list and a review checklist
+- [ ] Without `--generate-stubs`, the "Generated Drafts" section says "Run with --generate-stubs to auto-generate draft pages"
+- [ ] Progress: print stub generation progress
+
+##### Tests (minimum 5)
+- [ ] Synthesis stub contains content from fixture mentions (not just questions)
+- [ ] Stubs written to `_audit-drafts/`, NOT wiki root
+- [ ] `_audit-drafts/` added to `.gitignore`
+- [ ] Without `--generate-stubs`, no stubs are generated
+- [ ] Stub generation failure for one topic doesn't block others
+
+##### Integration tests (minimum 3)
+- [ ] Full audit-wiki pipeline: extract claims -> detect contradictions -> filter gaps -> generate report
+- [ ] Incremental audit: run twice with no changes -> second run skips extraction
+- [ ] Full audit with `--generate-stubs`: drafts directory populated
+
+##### Acceptance criteria
+1. Synthesis stubs contain real content from existing wiki mentions
+2. No files written to wiki root by default
+3. Full pipeline produces an actionable report in < 5 minutes on a 20-file wiki
+4. All tests pass (minimum 31 new tests across Phase 9.1-9.5)
+
+---
+
+### Phase 9 dependency map
+
+```
+Phase 9.1 (Progress + gap filter tightening)
+  └── Phase 9.2 (Topic-claim extraction)
+       └── Phase 9.3 (Cross-file comparison + topic dedup)
+            └── Phase 9.4 (LLM gap filter + report)
+                 └── Phase 9.5 (Opt-in stubs + integration tests)
+```
+
+**All sub-phases are sequential** — each builds on the previous. No parallelization opportunity within Phase 9.
+
+---
 
 ## Stretch goals (ordered by impact)
 
 1. **Tree-sitter code parser** — unlocks "KG of the codebase" pitch beyond markdown-only.
 2. **G** — personal KG skill observations via `pinakes.personal.write()`.
-3. **H** — contradiction detector (pairwise LLM judge).
+3. ~~**H** — contradiction detector (pairwise LLM judge).~~ **Superseded by Phase 9** — topic-clustered claim extraction.
 4. **F** — time-travel queries, niche but unique.
+
+---
+
+### Phase 10 — Agent-based wiki audit skill (Claude Code skill + pipeline integration)
+
+**Goal**: Ship a Claude Code skill that provides agent-level wiki auditing — finding issues the deterministic pipeline can't catch (terminology inconsistencies, stale info, broken references, cross-file contradictions visible only by reading actual content). The Phase 9 pipeline remains the universal fallback for non-Claude-Code clients.
+
+**Depends on**: Phase 9 (audit-wiki v2 pipeline complete).
+
+**Effort**: Less than half a day.
+
+**Key architectural decisions**: D47 (skill as primary agent), D48 (pre-flight + deep review design), D49 (standalone agent deferred). See presearch.md Loop 10.
+
+---
+
+#### Phase 10.1 — Claude Code skill file
+
+**Goal**: Create the `.claude/skills/audit-wiki/SKILL.md` file with frontmatter and prompt.
+
+**Effort**: 1-2 hours.
+
+##### Requirements
+
+- [x] Create `.claude/skills/audit-wiki/SKILL.md` with YAML frontmatter:
+  ```yaml
+  ---
+  name: audit-wiki
+  description: Run a deep audit of the project wiki — finds contradictions, gaps, stale info, and terminology inconsistencies
+  context: fork
+  allowed-tools: Read,Grep,Glob,Bash,mcp__project-docs__knowledge_search,mcp__project-docs__knowledge_query
+  ---
+  ```
+- [x] Skill prompt implements a two-phase workflow:
+  1. **Pre-flight**: Run `pnpm run pinakes audit-wiki` via Bash to generate `_audit-report.md`
+  2. **Deep review**: Read the audit report, then browse wiki files looking for issues:
+     - Cross-file terminology inconsistencies (e.g., different package managers, version numbers)
+     - Instructions referencing non-existent files or paths
+     - Stale information (dates, version pins that may be outdated)
+     - Contradictions between CLAUDE.md conventions and actual wiki content
+     - Missing cross-references between related topics
+     - Unclear or ambiguous instructions
+- [x] Prompt instructs agent to produce structured findings:
+  ```
+  ### Finding: [short title]
+  - **File(s)**: [file paths]
+  - **Type**: [terminology-inconsistency | stale-info | broken-reference | contradiction | gap | unclear]
+  - **Severity**: [high | medium | low]
+  - **Description**: [what the issue is]
+  - **Evidence**: [quotes from the files]
+  - **Suggested fix**: [what to change]
+  ```
+- [x] Prompt bounds the agent's scope: focus on `.pinakes/wiki/` directory, CLAUDE.md, and key config files. Do NOT read the entire codebase.
+- [x] Prompt instructs the agent to prioritize: read the pipeline report first, then selectively read files that are flagged or suspicious. Don't read every file unless the wiki is small (<20 files).
+- [x] Prompt handles the case where the Pinakes MCP tools are not available (MCP server not running): fall back to file-reading-only audit using Read/Grep/Glob.
+
+##### Acceptance criteria
+1. `/audit-wiki` command appears in Claude Code's skill menu
+2. Running the skill produces a structured findings report
+3. The skill finds at least one issue that the Phase 9 pipeline cannot (manual verification on the Pinakes wiki itself)
+4. The skill runs in a forked subagent (does not pollute main conversation)
+
+---
+
+#### Phase 10.2 — Validation and documentation
+
+**Goal**: Validate the skill on real wikis and document the dual-path audit strategy.
+
+**Effort**: 1 hour.
+
+##### Requirements
+
+- [x] Test the skill against the Pinakes project's own wiki (`.pinakes/wiki/`)
+- [ ] Test the skill against a fixture wiki with known issues (terminology inconsistencies, stale dates)
+- [x] Document in the project's user-facing docs (Phase 7 docs or README):
+  - "For Claude Code users: run `/audit-wiki` for a deep agent-powered audit"
+  - "For all users: run `pnpm run pinakes -- audit-wiki` for the pipeline-based audit"
+- [x] Add a note to CLAUDE.md mentioning the skill exists (under a new "## Skills (Claude Code)" section)
+
+##### Acceptance criteria
+1. Skill tested on at least 2 different wikis
+2. Dual-path audit strategy documented
+
+---
+
+#### Phase 10 — Future work (documented, not implemented)
+
+The following are documented as extension points, not current work:
+
+- **Standalone tool-use agent** (`src/cli/agent-audit.ts`): Requires extending `LlmProvider` with tool-use support (`tools`, `tool_choice`, structured responses). Deferred per D49. Would enable agent-level auditing for Goose, Cursor, OpenCode users.
+- **MCP sampling agent**: When MCP sampling achieves broad client adoption, the Pinakes server can implement server-side agent loops via `sampling/createMessage` with tools. This would be the cleanest solution — client-agnostic, server-driven, using the client's model. Monitor quarterly.
+- **Skill for other clients**: If Goose, Cursor, or Codex adopt a similar skill/command system, create equivalent skill files for those platforms.
+
+---
+
+### Phase 11 — Knowledge Lifecycle: Confidence Decay, Supersession, Crystallization
+
+**Goal**: Add a memory lifecycle to the knowledge wiki. Knowledge decays over time, is reinforced by corroboration, tracks its own evolution via claim supersession, and is automatically distilled from coding sessions into durable wiki entries. This transforms Pinakes from a static index into a living knowledge base where the LLM can distinguish fresh, well-supported facts from stale, single-source claims.
+
+**Depends on**: Phase 9 (claims table and extraction pipeline exist), Phase 10 (skill pattern established).
+
+**Effort**: ~3.5 days.
+
+**Key architectural decisions**: D50 (numeric confidence + decay), D51 (claim supersession), D52 (crystallization skill + CLI), D53 (per-kind half-lives), D54 (feature interaction cycle). See presearch.md Loop 12.
+
+---
+
+#### Phase 11.1 — Confidence scoring with time decay
+
+**Goal**: Replace the static TEXT `confidence` enum with a numeric `confidence_score` that decays over time and is boosted by corroboration. Implement confidence-weighted personal KG eviction.
+
+**Effort**: 1 day.
+
+##### Requirements
+
+- [x] **Schema migration** (`0004_add_confidence_score.sql`):
+  ```sql
+  ALTER TABLE pinakes_nodes ADD COLUMN confidence_score REAL NOT NULL DEFAULT 0.7;
+  -- Backfill from existing TEXT confidence column:
+  UPDATE pinakes_nodes SET confidence_score = CASE confidence
+    WHEN 'extracted' THEN 0.7
+    WHEN 'inferred' THEN 0.5
+    WHEN 'ambiguous' THEN 0.3
+    ELSE 0.7
+  END;
+  ```
+  The TEXT `confidence` column is PRESERVED for backward compatibility (G24). Both columns coexist.
+
+- [x] Update `src/db/schema.ts`:
+  - Add `confidenceScore: real('confidence_score').notNull().default(0.7)` to `pinakesNodes`
+  - Keep existing `confidence: text('confidence')` for backward compat
+
+- [x] `src/gate/confidence.ts` — new module for confidence computation:
+  - `HALF_LIFE_DAYS` lookup table by node kind (D53):
+    - `'section'`: 90
+    - `'decision'`: 180
+    - `'log_entry'`: 30
+    - `'gap'`: 60
+    - `'entity'`: 120
+    - default: 90
+  - `effectiveConfidence(baseScore: number, updatedAtMs: number, kind: string): number` — computes `baseScore * Math.pow(0.5, daysSinceUpdate / halfLife)`
+  - `corroborationBoost(currentScore: number, additionalSources: number): number` — increases score by 0.1 per additional source, capped at 1.0
+  - `contradictionPenalty(currentScore: number, activeContradictions: number): number` — decreases score by 0.15 per active contradiction, floored at 0.1
+  - Export `HALF_LIFE_DAYS` for testing
+  - Respect `PINAKES_DECAY_HALF_LIFE_DEFAULT` env var override
+
+- [x] Update `src/ingest/ingester.ts`:
+  - On ingest, set `confidence_score` based on `detectConfidence()` result: extracted=0.7, inferred=0.5, ambiguous=0.3
+  - When a node is created via `pinakes.project.write()`, default confidence_score=0.7
+
+- [x] Update retrieval bindings to include `effective_confidence`:
+  - `src/sandbox/bindings/pinakes.ts`: after fetching results from FTS/vec/hybrid, enrich each result with `effective_confidence` computed via `effectiveConfidence()`
+  - `src/retrieval/hybrid.ts`: add `effective_confidence?: number` to `HybridResult`
+  - `src/retrieval/fts.ts`: add `effective_confidence?: number` to `FtsResult`
+  - `src/retrieval/vec.ts`: add `effective_confidence?: number` to `VecResult`
+  - The field is optional (undefined when the feature is off or during migration)
+
+- [x] Update `src/mcp/tools/search.ts` to include `effective_confidence` in tagged results
+- [x] Update `src/mcp/tools/execute.ts` type declarations to document `effective_confidence` field
+
+- [x] **Background corroboration update** in `src/gate/confidence.ts`:
+  - `updateCorroborationScores(writer: BetterSqliteDatabase, scope: string): void`
+  - For each node, count distinct source_uris in `pinakes_claims` that have claims matching the node's topics (via title/section_path text matching)
+  - Apply `corroborationBoost()` to `confidence_score` in the DB
+  - Call this from `extractAllClaims()` after claim extraction completes (piggyback on existing audit-wiki flow)
+
+- [x] **Contradiction penalty** in `src/gate/confidence.ts`:
+  - `applyContradictionPenalties(writer: BetterSqliteDatabase, scope: string, contradictions: Contradiction[]): void`
+  - For each contradiction, find the nodes containing the contradicting claims and reduce their `confidence_score` via `contradictionPenalty()`
+  - Call this from `contradictionScan()` after contradictions are found
+
+- [x] **Personal KG eviction** in `src/gate/confidence.ts`:
+  - `evictPersonalKg(writer: BetterSqliteDatabase, maxChunks: number): { nodes_evicted: number; chunks_evicted: number }`
+  - Compute effective_confidence for all personal nodes in JS (can't do exp() in SQLite)
+  - Sort ascending by effective_confidence
+  - Delete the lowest-scoring nodes until chunk count is under `maxChunks` (5000)
+  - Called during ingest when scope='personal' and chunk count exceeds cap
+
+##### Tests (minimum 10)
+
+- [x] `effectiveConfidence` returns 0.7 for a fresh node (0 days elapsed)
+- [x] `effectiveConfidence` returns ~0.35 after half-life days elapsed (within 5% tolerance)
+- [x] `effectiveConfidence` returns ~0.175 after 2x half-life days (within 5%)
+- [x] `corroborationBoost` increases score by 0.1 per source, caps at 1.0
+- [x] `contradictionPenalty` decreases score by 0.15 per contradiction, floors at 0.1
+- [x] Per-kind half-lives: decision nodes decay slower than log entries
+- [x] Schema migration backfills existing nodes correctly (extracted -> 0.7, inferred -> 0.5, ambiguous -> 0.3)
+- [x] Hybrid search results include `effective_confidence` field (tested via FTS/vec/hybrid pipeline)
+- [x] Personal KG eviction removes lowest-confidence nodes first (not LRU)
+- [x] Personal KG eviction respects 5000-chunk cap
+- [x] Backward compat: existing `confidence` TEXT column still readable
+- [x] `PINAKES_DECAY_HALF_LIFE_DEFAULT` env var overrides per-kind defaults
+
+##### Acceptance criteria
+
+1. `effective_confidence` appears in search/hybrid/fts/vec results
+2. Personal KG eviction is confidence-weighted, not pure LRU
+3. Corroboration from claims pipeline boosts confidence scores
+4. Contradiction detection penalizes confidence scores
+5. All 269+ existing tests still pass (backward compat via preserved TEXT column)
+6. Schema footprint stays under 1500 tokens
+
+---
+
+#### Phase 11.2 — Supersession tracking
+
+**Goal**: Track claim evolution via soft-delete versioning. Enable "what changed?" queries and temporal audit reports.
+
+**Effort**: 1 day.
+
+**Depends on**: Phase 11.1 (confidence_score column exists for penalty/boost integration).
+
+##### Requirements
+
+- [ ] **Schema migration** (`0005_claim_supersession.sql`):
+  ```sql
+  ALTER TABLE pinakes_claims ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE pinakes_claims ADD COLUMN superseded_by INTEGER REFERENCES pinakes_claims(id) ON DELETE SET NULL;
+  ALTER TABLE pinakes_claims ADD COLUMN superseded_at INTEGER;
+  CREATE INDEX idx_claims_superseded ON pinakes_claims(superseded_at) WHERE superseded_at IS NOT NULL;
+  ```
+
+- [ ] Update `src/db/schema.ts`:
+  - Add `version`, `supersededBy`, `supersededAt` to `pinakesClaims`
+
+- [ ] Modify `src/cli/claims.ts` — `extractAllClaims()`:
+  - **Before deleting old claims**: load them into memory, grouped by topic
+  - **After extracting new claims**: for each new claim, find the best-matching old claim by topic equality (exact case-insensitive match)
+  - If a match is found: set old claim's `superseded_by = new_claim.id`, `superseded_at = now`; set new claim's `version = old_claim.version + 1`
+  - If no match: mark old claim as superseded with `superseded_by = NULL` (retired without specific successor)
+  - New claims without predecessors get `version = 1`
+  - **Do NOT hard-delete old claims** — they are soft-deleted (superseded_at is set)
+
+- [ ] **Version chain pruning**:
+  - After inserting new claims, count versions per (scope, source_uri, topic)
+  - If count > `MAX_CLAIM_VERSIONS` (default 5), hard-delete the oldest superseded claims beyond the limit
+  - Configurable via `PINAKES_MAX_CLAIM_VERSIONS` env var
+
+- [ ] **Confidence integration** (D54):
+  - When a claim is superseded, find the node containing it and apply a small confidence penalty (0.05) via `confidence_score` update — the node has some stale information
+  - When a new claim replaces an old one, the new claim's node gets a small boost (0.05)
+
+- [ ] `src/cli/audit-wiki.ts` — update audit report:
+  - Add a "Claim Evolution" section showing recently superseded claims: "Previously: [old claim] (from [file], [date]). Now: [new claim] (from [file], [date])"
+  - Only show claims superseded since the last audit (based on `superseded_at > last_audit_ts`)
+
+- [ ] **Query helpers** in `src/cli/claims.ts`:
+  - `queryClaimHistory(reader, scope, topic): ClaimVersion[]` — returns the full version chain for a topic, ordered by version descending
+  - `queryRecentlySuperseded(reader, scope, since?: number): SupersededClaim[]` — returns claims superseded after `since` timestamp
+
+##### Tests (minimum 8)
+
+- [ ] Re-extraction of unchanged claims produces same versions (idempotent)
+- [ ] Changed claim is superseded: old claim has `superseded_by` pointing to new claim
+- [ ] New claim gets `version = old_version + 1`
+- [ ] Retired claim (no successor) has `superseded_by = NULL` and `superseded_at` set
+- [ ] Version chain pruning: 6 versions → oldest deleted, 5 remain
+- [ ] `queryClaimHistory` returns ordered version chain
+- [ ] `queryRecentlySuperseded` filters by timestamp
+- [ ] Confidence penalty applied to nodes with superseded claims
+- [ ] Confidence boost applied to nodes with new claims that supersede old ones
+- [ ] Audit report includes "Claim Evolution" section
+
+##### Acceptance criteria
+
+1. Claim re-extraction produces version chains instead of destroying history
+2. "What changed?" queries return claim evolution
+3. Audit report shows claim evolution section
+4. Version chain bounded at 5 (or configured) per topic per file
+5. Confidence scores updated on supersession events
+
+---
+
+#### Phase 11.3 — Crystallization (session distillation)
+
+**Goal**: Enable automatic distillation of coding sessions into wiki entries. Ship a Claude Code skill and a CLI command.
+
+**Effort**: 1/2 day (skill) + 1 day (CLI).
+
+**Depends on**: Phase 11.1 (crystallized nodes get confidence_score=0.8).
+
+##### Requirements
+
+- [ ] **Claude Code skill** at `.claude/skills/crystallize/SKILL.md`:
+  ```yaml
+  ---
+  name: crystallize
+  description: Distill the current coding session into wiki knowledge pages — captures decisions, learnings, and changes
+  context: fork
+  allowed-tools: Read,Grep,Glob,Bash,mcp__kg-mcp__kg_search,mcp__kg-mcp__kg_execute
+  ---
+  ```
+  Skill prompt implements:
+  1. Run `git diff HEAD~1..HEAD` (or `--since` timeframe) to identify what changed
+  2. Filter diff: exclude test files, lockfiles, generated files; include src/, docs/, config
+  3. If diff is large (>1000 lines), first pass: summarize each file's changes in one sentence; second pass: deep analysis of the most significant changes
+  4. Read existing wiki via `knowledge_search` to avoid duplicating existing knowledge
+  5. For each significant decision or learning, draft a wiki page:
+     - Title reflecting the topic
+     - Summary paragraph
+     - Rationale/context section
+     - Links to relevant files and existing wiki pages
+  6. Write drafts to `_crystallize-drafts/` via Bash (`mkdir -p .pinakes/wiki/_crystallize-drafts/ && cat > ...`)
+  7. Print summary of drafts created, with review instructions
+
+- [ ] **CLI command** `pnpm run pinakes -- crystallize`:
+  - `src/cli/crystallize.ts` — session distillation via LLM provider
+  - Parse git diff (configurable: `--since <date>`, `--commits <n>`, default: last commit)
+  - Filter diff (configurable: `--include <glob>`, `--exclude <glob>`, defaults: exclude `*.test.ts`, `*.lock`, `node_modules/`)
+  - Minimum diff threshold: skip if fewer than 10 significant lines changed (configurable via `--min-lines`)
+  - Maximum diff size: truncate to 50K tokens if larger
+  - Send filtered diff + existing wiki context to LLM provider with crystallization prompt
+  - Write drafts to `<wikiRoot>/_crystallize-drafts/<slug>.md`
+  - Each draft includes header metadata:
+    ```yaml
+    ---
+    crystallized_at: 2026-04-11T...
+    source_commits: [abc123, def456]
+    confidence_score: 0.8
+    status: draft
+    ---
+    ```
+  - Progress output on stderr
+
+- [ ] **Draft promotion** command `pnpm run pinakes -- crystallize --promote <path>`:
+  - Move a draft from `_crystallize-drafts/` to the wiki root
+  - Trigger ingest via the normal chokidar/ingest path
+  - Set `confidence_score = 0.8` on the ingested node (higher than default 0.7)
+  - Delete the draft file after successful promotion
+
+- [ ] **Gitignore management**: append `_crystallize-drafts/` to `.pinakes/.gitignore` if not already present (reuse D43 pattern)
+
+##### Tests (minimum 7)
+
+- [ ] CLI parses git diff output correctly
+- [ ] Diff filtering excludes test files and lockfiles
+- [ ] Minimum diff threshold: skip if below 10 lines
+- [ ] Maximum diff size: truncate large diffs to token limit
+- [ ] Drafts written to `_crystallize-drafts/`, not wiki root
+- [ ] Draft promotion moves file to wiki root and triggers ingest
+- [ ] Promoted nodes get confidence_score = 0.8
+- [ ] `_crystallize-drafts/` added to `.gitignore`
+
+##### Acceptance criteria
+
+1. `/crystallize` skill appears in Claude Code's skill menu
+2. CLI produces draft wiki pages from git diffs
+3. Drafts are never written directly to wiki root (staging area pattern)
+4. Promoted drafts are ingested with elevated confidence (0.8)
+5. Large diffs are handled gracefully (truncation + two-pass)
+
+---
+
+### Phase 11 dependency map
+
+```
+Phase 11.1 (Confidence scoring + decay)
+  ├── Phase 11.2 (Supersession tracking)
+  └── Phase 11.3 (Crystallization)
+```
+
+Phase 11.2 and 11.3 are independent of each other but both depend on 11.1 (the `confidence_score` column).
+
+---
+
+### Updated phase dependency map
+
+```
+Phase 0 (Scaffold) ✅
+  └── Phase 1 (Spike) ✅
+       └── Phase 2 (Persistence + ingest) ✅
+            ├── Phase 3 (Sandbox full) ✅
+            └── Phase 4 (Hybrid + budget) ✅
+                 └── Phase 4.5 (Write path) ✅
+                      └── Phase 5 (Personal KG + privacy) ✅
+                           └── Phase 6 (Provenance + gaps) ✅
+                                └── Phase 7 (Polish + MVP ship) ✅
+                                     └── Phase 7.5 (Recall-optimized search)
+                                          └── Phase 8 (v1 stretch)
+                                               └── Phase 9 (audit-wiki v2)
+                                                    └── Phase 10 (agent skill)
+                                                         └── Phase 11 (knowledge lifecycle)
+                                                              ├── 11.1 (confidence + decay)
+                                                              ├── 11.2 (supersession)
+                                                              └── 11.3 (crystallization)
+```
 
 ---
 
@@ -805,3 +1435,8 @@ Every brief requirement mapped to a phase and test:
 | ~~OQ3~~ | ~~Wiki-updater proposals file protocol~~ | **Dissolved by D35** — write path is self-contained |
 | ~~OQ4~~ | ~~Extend pharos.db or separate file?~~ | **Dissolved by D35** — standalone `.pinakes/pinakes.db` |
 | ~~OQ5~~ | ~~Pharos settings UI for API keys~~ | **Dissolved by D35** — env vars only, client-agnostic |
+| OQ6 | Do MCP tool names in `allowed-tools` match across user configurations? | Phase 10 (test against live setup) |
+| OQ7 | Does `context: fork` preserve MCP tool access in current Claude Code? | Phase 10 (test against live setup) |
+| OQ8 | Should `effective_confidence` be a third RRF signal (alongside FTS + vec) or remain metadata-only? | Phase 11.1 (start as metadata-only, evaluate after real usage) |
+| OQ9 | What is the right `MAX_CLAIM_VERSIONS` default — 5 is arbitrary, should it be lower? | Phase 11.2 (start at 5, observe growth on real wikis) |
+| OQ10 | Should crystallization run automatically via post-commit hook, or remain manual-only? | Phase 11.3 (start manual-only, evaluate after v1) |

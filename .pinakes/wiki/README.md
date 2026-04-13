@@ -145,13 +145,14 @@ knowledge_query({
 All data is stored under `~/.pinakes/` (override with `PINAKES_ROOT`). Project data lives at `~/.pinakes/projects/<mangled-path>/`.
 
 ```bash
-npx @pella-labs/pinakes serve   [--wiki-path <dir>]   # Start the stdio MCP server
-npx @pella-labs/pinakes rebuild [--wiki-path <dir>]   # Full rebuild from markdown
-npx @pella-labs/pinakes status                        # Health check + row counts
-npx @pella-labs/pinakes audit   [--n 20]              # Tail the audit log
-npx @pella-labs/pinakes purge   --scope <s> --confirm # Delete a scope's DB
-npx @pella-labs/pinakes export  --scope <s> [--out f] # Dump nodes + edges as JSON
-npx @pella-labs/pinakes import  --scope <s> --in f    # Restore from dump
+npx @pella-labs/pinakes serve      [--wiki-path <dir>]   # Start the stdio MCP server
+npx @pella-labs/pinakes rebuild    [--wiki-path <dir>]   # Full rebuild from markdown
+npx @pella-labs/pinakes status                           # Health check + row counts
+npx @pella-labs/pinakes audit      [--n 20]              # Tail the audit log
+npx @pella-labs/pinakes audit-wiki                       # Wiki audit (contradictions, gaps)
+npx @pella-labs/pinakes purge      --scope <s> --confirm # Delete a scope's DB
+npx @pella-labs/pinakes export     --scope <s> [--out f] # Dump nodes + edges as JSON
+npx @pella-labs/pinakes import     --scope <s> --in f    # Restore from dump
 ```
 
 ## Embedder configuration
@@ -191,6 +192,14 @@ Changing the embedder requires a full rebuild (`pinakes rebuild`) since the vect
 - **Budget gate**: every response stays under `max_tokens` (default 5000, hard cap 25000)
 - **Deterministic IDs**: `sha1(scope + ':' + source_uri + ':' + section_path)` means re-indexing is idempotent
 - **Centralized storage**: all data under `~/.pinakes/`, project paths mirrored as `~/.pinakes/projects/<mangled-path>/`
+
+## Wiki auditing
+
+Two paths for auditing your knowledge base:
+
+**Claude Code users** — run `/audit-wiki` for a deep agent-powered audit. This runs the pipeline first, then has Claude read through wiki files to find cross-file contradictions, broken references, terminology inconsistencies, and stale info that the pipeline can't catch.
+
+**All users** — run `npx @pella-labs/pinakes audit-wiki` (or `pnpm run pinakes -- audit-wiki` from source) for the deterministic pipeline audit. Produces `_audit-report.md` in the wiki directory with contradictions, documentation gaps, and health metrics. Requires an LLM provider (Ollama, API key, or `claude` CLI).
 
 ## Development
 

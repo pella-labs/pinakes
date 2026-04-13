@@ -54,12 +54,16 @@ function scanViaGit(projectRoot: string): string[] {
     { cwd: projectRoot, encoding: 'utf-8', timeout: 10_000, maxBuffer: 4 * 1024 * 1024 }
   );
 
+  const wikiDir = resolve(projectRoot, '.pinakes', 'wiki');
+
   return stdout
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
     .filter((l) => !l.startsWith('.pinakes/'))
     .map((rel) => resolve(projectRoot, rel))
+    // Belt-and-suspenders: reject any file that resolved inside the wiki dir
+    .filter((abs) => !abs.startsWith(wikiDir + '/') && abs !== wikiDir)
     .sort();
 }
 
@@ -96,10 +100,15 @@ function walkDir(dir: string, projectRoot: string, results: string[]): void {
     return; // permission denied, symlink loop, etc.
   }
 
+  const wikiDir = resolve(projectRoot, '.pinakes', 'wiki');
+
   for (const entry of entries) {
     if (WALK_EXCLUDES.has(entry.name)) continue;
 
     const full = resolve(dir, entry.name);
+
+    // Belt-and-suspenders: never recurse into the wiki directory
+    if (full === wikiDir || full.startsWith(wikiDir + '/')) continue;
 
     if (entry.isDirectory()) {
       walkDir(full, projectRoot, results);

@@ -36,6 +36,7 @@ export interface HybridResult {
   confidence: string;
   title: string | null;
   section_path: string;
+  effective_confidence?: number;
 }
 
 export interface HybridSearchOpts {
@@ -123,6 +124,7 @@ export function rrfFuse(
         confidence: r.confidence,
         title: r.title ?? null,
         section_path: r.section_path ?? '',
+        effective_confidence: r.effective_confidence,
         _rrfScore: rrfScore,
       });
     }
@@ -145,6 +147,7 @@ export function rrfFuse(
         confidence: r.confidence,
         title: r.title ?? null,
         section_path: r.section_path ?? '',
+        effective_confidence: r.effective_confidence,
         _rrfScore: rrfScore,
       });
     }
@@ -163,6 +166,7 @@ export function rrfFuse(
     confidence: r.confidence,
     title: r.title,
     section_path: r.section_path,
+    effective_confidence: r.effective_confidence,
   }));
 }
 
@@ -199,6 +203,7 @@ export function rrfFuseMulti(
           confidence: r.confidence,
           title: r.title ?? null,
           section_path: r.section_path ?? '',
+          effective_confidence: r.effective_confidence,
           _rrfScore: rrfScore,
         });
       }
@@ -217,5 +222,6 @@ export function rrfFuseMulti(
     confidence: r.confidence,
     title: r.title,
     section_path: r.section_path,
+    effective_confidence: r.effective_confidence,
   }));
 }

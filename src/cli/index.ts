@@ -66,7 +66,9 @@ function getRequiredString(flags: Flags, key: string): string {
 }
 
 async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
+  const rawArgv = process.argv.slice(2);
+  // Skip leading '--' from pnpm's argument separator (pnpm run pinakes -- serve)
+  const argv = rawArgv[0] === '--' ? rawArgv.slice(1) : rawArgv;
   const subcommand = argv[0];
   const { flags } = parseFlags(argv.slice(1));
 
@@ -135,7 +137,7 @@ async function main(): Promise<void> {
       // eslint-disable-next-line no-console
       console.log(
         `\nAudit complete: ${result.contradictions.contradictions.length} contradictions, ` +
-          `${result.gaps_found} gaps, ${result.stub_pages_created.length} stub pages created.`
+          `${result.gaps_found} gaps, ${result.topology_gaps} topology gaps.`
       );
       break;
     }

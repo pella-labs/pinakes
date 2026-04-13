@@ -62,7 +62,10 @@ export class RepoMirrorWatcher {
 
     const shouldMirror = (path: string): boolean => {
       if (!path.toLowerCase().endsWith('.md')) return false;
-      const rel = relative(this.projectRoot, resolve(path));
+      const abs = resolve(path);
+      // Never mirror files already inside the wiki (prevents recursive nesting)
+      if (abs.startsWith(this.wikiRoot + '/') || abs === this.wikiRoot) return false;
+      const rel = relative(this.projectRoot, abs);
       // Skip files under excluded directories
       const segments = rel.split('/');
       for (const seg of segments.slice(0, -1)) {

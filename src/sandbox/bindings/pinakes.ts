@@ -8,6 +8,7 @@ import { ftsQuery as ftsQueryImpl } from '../../retrieval/fts.js';
 import { vecQuery as vecQueryImpl } from '../../retrieval/vec.js';
 import { rrfFuse } from '../../retrieval/hybrid.js';
 import { pagerank, connectedComponents } from '../../retrieval/graph.js';
+import { effectiveConfidence } from '../../gate/confidence.js';
 import { writeWikiFile, appendWikiLog, removeWikiFile, type WriteCounter } from './write.js';
 import { queryGaps } from '../../gaps/detector.js';
 import { errorMessage, marshalJsValue } from '../helpers.js';
@@ -276,6 +277,7 @@ function nodeGet(
   content: string;
   token_count: number;
   confidence: string;
+  effective_confidence?: number;
 } | null {
   const row = reader
     .prepare<
@@ -289,16 +291,23 @@ function nodeGet(
         content: string;
         token_count: number;
         confidence: string;
+        confidence_score: number;
+        updated_at: number;
       }
     >(
-      `SELECT id, source_uri, section_path, kind, title, content, token_count, confidence
+      `SELECT id, source_uri, section_path, kind, title, content, token_count, confidence, confidence_score, updated_at
          FROM pinakes_nodes
         WHERE id = ? AND scope = ?
         LIMIT 1`
     )
     .get(id, scope);
 
-  return row ?? null;
+  if (!row) return null;
+  const { confidence_score, updated_at, ...rest } = row;
+  return {
+    ...rest,
+    effective_confidence: effectiveConfidence(confidence_score, updated_at, rest.kind),
+  };
 }
 
 function indexQuery(

@@ -1,225 +1,318 @@
+/**
+ * Contradiction detector v2 (D41 — topic-clustered claim comparison).
+ *
+ * Two-phase pipeline:
+ *   Phase A (claims.ts): Per-file LLM extraction of {topic, claims[]}
+ *   Phase B (this file): Group claims by topic, compare cross-file via LLM
+ *
+ * Topic dedup uses embedding cosine similarity > threshold (default 0.85)
+ * to merge terminology variants like "OAuth2" / "OAuth 2.0".
+ */
+
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { DbBundle } from '../db/client.js';
 import type { LlmProvider } from '../llm/provider.js';
+import type { Embedder } from '../retrieval/embedder.js';
 import { logger } from '../observability/logger.js';
+import type { ProgressReporter } from './progress.js';
 
-/**
- * Contradiction detector CLI command (PRD Phase 8, stretch goal H).
- *
- * Scans wiki chunks for contradictory claims using pairwise LLM judge.
- * Rate-limited to 1 scan per hour. Outputs contradictions.md to wiki root.
- */
+// ----------------------------------------------------------------------------
+// Types
+// ----------------------------------------------------------------------------
 
 export interface ContradictionScanOpts {
   bundle: DbBundle;
   scope: 'project' | 'personal';
   llmProvider: LlmProvider;
   wikiRoot: string;
+  embedder?: Embedder;
+  topicSimilarity?: number;
+  progress?: ProgressReporter;
 }
 
 export interface Contradiction {
-  chunkA: { id: string; source_uri: string; text: string };
-  chunkB: { id: string; source_uri: string; text: string };
+  topic: string;
+  claimA: { claim: string; source_uri: string };
+  claimB: { claim: string; source_uri: string };
   explanation: string;
   confidence: 'high' | 'medium';
 }
 
 export interface ContradictionResult {
   scanned_pairs: number;
+  topics_scanned: number;
+  claims_extracted: number;
   contradictions: Contradiction[];
   rate_limited: boolean;
 }
 
-const RATE_LIMIT_MS = 0; // disabled during testing (was 60 * 60 * 1000)
-const MAX_PAIRS = 50;
-const SIMILARITY_THRESHOLD = 0.3;
+const RATE_LIMIT_MS = 60 * 60 * 1000; // 1 hour
+const DEFAULT_TOPIC_SIMILARITY = 0.85;
 
-const JUDGE_SYSTEM = `You are a contradiction detector. Given two text chunks from a knowledge wiki, determine if they contain contradictory claims. Respond with ONLY valid JSON: {"contradicts": true/false, "explanation": "why", "confidence": "high"|"medium"|"low"}. Only report contradictions you are confident about.`;
+const COMPARE_SYSTEM = `You are a contradiction detector for a knowledge wiki. Given claims about a topic from different wiki files, identify any contradictions — places where two files make incompatible factual statements.
+
+Return ONLY valid JSON:
+{"contradictions":[{"claim_a":"exact claim text","source_a":"file","claim_b":"exact claim text","source_b":"file","explanation":"why these contradict","confidence":"high"|"medium"}]}
+
+Rules:
+- Only report genuine factual contradictions, not differences in emphasis or scope
+- "high" confidence = clear logical incompatibility
+- "medium" confidence = likely contradiction but could be context-dependent
+- If no contradictions, return {"contradictions":[]}`;
+
+// ----------------------------------------------------------------------------
+// Main entry point
+// ----------------------------------------------------------------------------
 
 /**
- * Run a contradiction scan. Returns immediately if rate-limited.
+ * Run contradiction scan using topic-clustered claim comparison (D41).
+ * Requires claims to be extracted first (via extractAllClaims).
  */
 export async function contradictionScan(
-  opts: ContradictionScanOpts
+  opts: ContradictionScanOpts,
 ): Promise<ContradictionResult> {
-  const { bundle, scope, llmProvider, wikiRoot } = opts;
+  const { bundle, scope, llmProvider, wikiRoot, progress } = opts;
+  const threshold = opts.topicSimilarity ?? DEFAULT_TOPIC_SIMILARITY;
 
   // Rate limit check
   const lastScan = bundle.writer
     .prepare<[string], { value: string }>(
-      `SELECT value FROM pinakes_meta WHERE key = ?`
+      `SELECT value FROM pinakes_meta WHERE key = ?`,
     )
     .get('last_contradiction_scan');
 
   if (lastScan) {
     const lastTs = parseInt(lastScan.value, 10);
     if (Date.now() - lastTs < RATE_LIMIT_MS) {
-      return { scanned_pairs: 0, contradictions: [], rate_limited: true };
+      return { scanned_pairs: 0, topics_scanned: 0, claims_extracted: 0, contradictions: [], rate_limited: true };
     }
   }
 
-  if (!llmProvider.available()) {
-    throw new Error(
-      'No LLM provider available for contradiction detection. ' +
-        'Set PINAKES_OLLAMA_URL, ANTHROPIC_API_KEY, or OPENAI_API_KEY, ' +
-        'or install the claude/codex CLI.'
-    );
+  // Get all claims grouped by topic
+  const allClaims = bundle.writer
+    .prepare<[string], { topic: string; claim: string; source_uri: string }>(
+      `SELECT topic, claim, source_uri FROM pinakes_claims WHERE scope = ? ORDER BY topic`,
+    )
+    .all(scope);
+
+  if (allClaims.length === 0) {
+    return { scanned_pairs: 0, topics_scanned: 0, claims_extracted: 0, contradictions: [], rate_limited: false };
   }
 
-  // Find candidate pairs via vector similarity
-  const pairs = findCandidatePairs(bundle, scope);
+  // Group claims by topic
+  let topicGroups = groupByTopic(allClaims);
+
+  // Topic dedup via embeddings (merge "OAuth2" and "OAuth 2.0")
+  if (opts.embedder) {
+    topicGroups = await deduplicateTopics(topicGroups, opts.embedder, threshold);
+  }
+
+  // Filter to topics with claims from 2+ files (cross-file contradictions only)
+  const crossFileTopics = topicGroups.filter((g) => {
+    const uniqueFiles = new Set(g.claims.map((c) => c.source_uri));
+    return uniqueFiles.size >= 2;
+  });
 
   const contradictions: Contradiction[] = [];
   let scanned = 0;
 
-  for (const pair of pairs) {
+  progress?.startPhase('Phase 1/3: Comparing claims across topics', crossFileTopics.length);
+
+  for (const group of crossFileTopics) {
+    const uniqueFiles = new Set(group.claims.map((c) => c.source_uri));
     try {
+      const prompt = formatComparisonPrompt(group);
       const response = await llmProvider.complete({
-        system: JUDGE_SYSTEM,
-        prompt: `Chunk A (from ${pair.a.source_uri}):\n${pair.a.text}\n\nChunk B (from ${pair.b.source_uri}):\n${pair.b.text}`,
-        maxTokens: 200,
+        system: COMPARE_SYSTEM,
+        prompt,
+        maxTokens: 500,
       });
 
-      const judgment = parseJudgment(response);
-      if (judgment && judgment.contradicts && (judgment.confidence === 'high' || judgment.confidence === 'medium')) {
+      const parsed = parseContradictionResponse(response);
+      for (const c of parsed) {
         contradictions.push({
-          chunkA: pair.a,
-          chunkB: pair.b,
-          explanation: judgment.explanation,
-          confidence: judgment.confidence,
+          topic: group.topic,
+          claimA: { claim: c.claim_a, source_uri: c.source_a },
+          claimB: { claim: c.claim_b, source_uri: c.source_b },
+          explanation: c.explanation,
+          confidence: c.confidence as 'high' | 'medium',
         });
       }
+
       scanned++;
+      progress?.tick(
+        group.topic,
+        `${group.claims.length} claims from ${uniqueFiles.size} files — ${parsed.length > 0 ? `${parsed.length} CONTRADICTION(S)` : 'clean'}`,
+      );
     } catch (err) {
-      logger.warn({ err, pairA: pair.a.id, pairB: pair.b.id }, 'contradiction check failed for pair');
+      logger.warn({ err, topic: group.topic }, 'contradiction comparison failed for topic');
+      progress?.tick(group.topic, `failed: ${err instanceof Error ? err.message.slice(0, 60) : err}`);
     }
   }
+
+  progress?.endPhase(`${contradictions.length} contradictions found across ${scanned} topics`);
 
   // Update rate limit timestamp
   bundle.writer
-    .prepare(
-      `INSERT OR REPLACE INTO pinakes_meta (key, value) VALUES ('last_contradiction_scan', ?)`
-    )
+    .prepare(`INSERT OR REPLACE INTO pinakes_meta (key, value) VALUES ('last_contradiction_scan', ?)`)
     .run(String(Date.now()));
 
-  // Write contradictions.md if any found
+  // Write report if contradictions found
   if (contradictions.length > 0) {
-    writeContradictionReport(wikiRoot, contradictions, bundle, scope);
+    writeContradictionReport(wikiRoot, contradictions);
   }
 
-  return { scanned_pairs: scanned, contradictions, rate_limited: false };
+  return {
+    scanned_pairs: scanned,
+    topics_scanned: crossFileTopics.length,
+    claims_extracted: allClaims.length,
+    contradictions,
+    rate_limited: false,
+  };
 }
 
-// ---------------------------------------------------------------------------
-// Internals
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// Topic grouping + dedup
+// ----------------------------------------------------------------------------
 
-interface ChunkInfo {
-  id: string;
-  source_uri: string;
-  text: string;
+interface TopicGroup {
+  topic: string;
+  claims: Array<{ claim: string; source_uri: string }>;
 }
 
-interface CandidatePair {
-  a: ChunkInfo;
-  b: ChunkInfo;
+function groupByTopic(
+  claims: Array<{ topic: string; claim: string; source_uri: string }>,
+): TopicGroup[] {
+  const map = new Map<string, TopicGroup>();
+  for (const c of claims) {
+    const key = c.topic.toLowerCase();
+    let group = map.get(key);
+    if (!group) {
+      group = { topic: c.topic, claims: [] };
+      map.set(key, group);
+    }
+    group.claims.push({ claim: c.claim, source_uri: c.source_uri });
+  }
+  return [...map.values()];
 }
 
 /**
- * Find candidate pairs for contradiction checking.
- * Uses vector similarity to find chunks that are semantically similar
- * (which is a prerequisite for them to potentially contradict).
+ * Merge topic groups whose topic strings are semantically similar
+ * (cosine similarity > threshold). Handles "OAuth2" / "OAuth 2.0" merging.
  */
-function findCandidatePairs(bundle: DbBundle, scope: string): CandidatePair[] {
-  // Get all chunks with their vec embeddings
-  const chunks = bundle.writer
-    .prepare<[string], { id: string; source_uri: string; text: string; rowid: number }>(
-      `SELECT c.id, n.source_uri, c.text, c.rowid
-       FROM pinakes_chunks c
-       JOIN pinakes_nodes n ON c.node_id = n.id
-       WHERE n.scope = ?
-       ORDER BY c.rowid`
-    )
-    .all(scope);
+export async function deduplicateTopics(
+  groups: TopicGroup[],
+  embedder: Embedder,
+  threshold: number,
+): Promise<TopicGroup[]> {
+  if (groups.length <= 1) return groups;
 
-  if (chunks.length < 2) return [];
+  // Embed all topic strings
+  const embeddings: Float32Array[] = [];
+  for (const g of groups) {
+    embeddings.push(await embedder.embed(g.topic));
+  }
 
-  // For each chunk, find the top 5 most similar via vec
-  const pairs = new Set<string>();
-  const result: CandidatePair[] = [];
+  // Union-find for merging
+  const parent = groups.map((_, i) => i);
+  function find(i: number): number {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]!]!;
+      i = parent[i]!;
+    }
+    return i;
+  }
+  function union(a: number, b: number): void {
+    parent[find(b)] = find(a);
+  }
 
-  for (const chunk of chunks) {
-    if (result.length >= MAX_PAIRS) break;
-
-    const similar = bundle.writer
-      .prepare<[number, number], { rowid: number; distance: number }>(
-        `SELECT rowid, distance
-         FROM pinakes_chunks_vec
-         WHERE embedding MATCH (SELECT embedding FROM pinakes_chunks_vec WHERE rowid = ?)
-         AND k = ?
-         ORDER BY distance`
-      )
-      .all(chunk.rowid, 6); // 6 because first result is self
-
-    for (const sim of similar) {
-      if (sim.rowid === chunk.rowid) continue;
-      if (sim.distance > SIMILARITY_THRESHOLD) continue;
-
-      // Deduplicate symmetric pairs
-      const pairKey = [chunk.rowid, sim.rowid].sort().join(':');
-      if (pairs.has(pairKey)) continue;
-      pairs.add(pairKey);
-
-      const other = chunks.find((c) => c.rowid === sim.rowid);
-      if (!other) continue;
-
-      // Skip same-source pairs (they're likely just adjacent sections)
-      if (chunk.source_uri === other.source_uri) continue;
-
-      result.push({
-        a: { id: chunk.id, source_uri: chunk.source_uri, text: chunk.text },
-        b: { id: other.id, source_uri: other.source_uri, text: other.text },
-      });
-
-      if (result.length >= MAX_PAIRS) break;
+  // Compare all pairs
+  for (let i = 0; i < groups.length; i++) {
+    for (let j = i + 1; j < groups.length; j++) {
+      const sim = cosineSimilarity(embeddings[i]!, embeddings[j]!);
+      if (sim > threshold) {
+        union(i, j);
+      }
     }
   }
 
-  return result;
+  // Merge groups
+  const merged = new Map<number, TopicGroup>();
+  for (let i = 0; i < groups.length; i++) {
+    const root = find(i);
+    let target = merged.get(root);
+    if (!target) {
+      target = { topic: groups[root]!.topic, claims: [] };
+      merged.set(root, target);
+    }
+    target.claims.push(...groups[i]!.claims);
+  }
+
+  return [...merged.values()];
 }
 
-function parseJudgment(
-  response: string
-): { contradicts: boolean; explanation: string; confidence: string } | null {
+function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i]! * b[i]!;
+    normA += a[i]! * a[i]!;
+    normB += b[i]! * b[i]!;
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dot / denom;
+}
+
+// ----------------------------------------------------------------------------
+// LLM prompt + response parsing
+// ----------------------------------------------------------------------------
+
+function formatComparisonPrompt(group: TopicGroup): string {
+  const lines = [`Topic: "${group.topic}"\n\nClaims from different files:\n`];
+  for (const c of group.claims) {
+    lines.push(`- [${c.source_uri}]: "${c.claim}"`);
+  }
+  return lines.join('\n');
+}
+
+interface ParsedContradiction {
+  claim_a: string;
+  source_a: string;
+  claim_b: string;
+  source_b: string;
+  explanation: string;
+  confidence: string;
+}
+
+export function parseContradictionResponse(response: string): ParsedContradiction[] {
   try {
-    const match = response.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    const parsed = JSON.parse(match[0]) as {
-      contradicts?: boolean;
-      explanation?: string;
-      confidence?: string;
-    };
-    if (typeof parsed.contradicts !== 'boolean') return null;
-    return {
-      contradicts: parsed.contradicts,
-      explanation: parsed.explanation ?? '',
-      confidence: parsed.confidence ?? 'low',
-    };
+    const fenceMatch = response.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+    const jsonStr = fenceMatch ? fenceMatch[1]! : response;
+
+    const objMatch = jsonStr.match(/\{[\s\S]*\}/);
+    if (!objMatch) return [];
+
+    const parsed = JSON.parse(objMatch[0]) as { contradictions?: ParsedContradiction[] };
+    if (!Array.isArray(parsed.contradictions)) return [];
+
+    return parsed.contradictions.filter(
+      (c): c is ParsedContradiction =>
+        typeof c.claim_a === 'string' &&
+        typeof c.claim_b === 'string' &&
+        typeof c.explanation === 'string' &&
+        (c.confidence === 'high' || c.confidence === 'medium'),
+    );
   } catch {
-    return null;
+    return [];
   }
 }
 
-function writeContradictionReport(
-  wikiRoot: string,
-  contradictions: Contradiction[],
-  bundle: DbBundle,
-  scope: string
-): void {
-  // writeFileSync and join imported at top level
+// ----------------------------------------------------------------------------
+// Report output
+// ----------------------------------------------------------------------------
 
+function writeContradictionReport(wikiRoot: string, contradictions: Contradiction[]): void {
   const lines = [
     '# Detected Contradictions',
     '',
@@ -227,43 +320,27 @@ function writeContradictionReport(
     '',
   ];
 
+  // Group by topic
+  const byTopic = new Map<string, Contradiction[]>();
   for (const c of contradictions) {
-    lines.push(`## ${c.chunkA.source_uri} vs ${c.chunkB.source_uri}`);
+    const list = byTopic.get(c.topic) ?? [];
+    list.push(c);
+    byTopic.set(c.topic, list);
+  }
+
+  for (const [topic, items] of byTopic) {
+    lines.push(`## ${topic}`);
     lines.push('');
-    lines.push(
-      `- **Chunk A** (${c.chunkA.source_uri}): "${truncate(c.chunkA.text, 200)}"`
-    );
-    lines.push(
-      `- **Chunk B** (${c.chunkB.source_uri}): "${truncate(c.chunkB.text, 200)}"`
-    );
-    lines.push(`- **Explanation**: ${c.explanation}`);
-    lines.push(`- **Confidence**: ${c.confidence}`);
-    lines.push('');
+    for (const c of items) {
+      lines.push(`- **${c.claimA.source_uri}**: "${c.claimA.claim}"`);
+      lines.push(`- **${c.claimB.source_uri}**: "${c.claimB.claim}"`);
+      lines.push(`- **Explanation**: ${c.explanation} (${c.confidence} confidence)`);
+      lines.push('');
+    }
   }
 
   writeFileSync(join(wikiRoot, 'contradictions.md'), lines.join('\n'), 'utf8');
-
-  // Log the scan
-  try {
-    bundle.writer
-      .prepare(
-        `INSERT INTO pinakes_log (ts, scope, kind, source_uri, payload)
-         VALUES (?, ?, 'contradiction:scan', NULL, ?)`
-      )
-      .run(
-        Date.now(),
-        scope,
-        JSON.stringify({ contradictions_found: contradictions.length })
-      );
-  } catch {
-    // Non-fatal
-  }
 }
 
-function truncate(s: string, maxLen: number): string {
-  if (s.length <= maxLen) return s;
-  return s.slice(0, maxLen) + '...';
-}
-
-// Export for testing
-export { findCandidatePairs as _findCandidatePairs, parseJudgment as _parseJudgment };
+// Export internals for testing
+export { groupByTopic as _groupByTopic, cosineSimilarity as _cosineSimilarity };

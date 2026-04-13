@@ -1,4 +1,5 @@
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
+import { effectiveConfidence } from '../gate/confidence.js';
 
 /**
  * FTS5 full-text search with BM25 ranking and optional snippet extraction.
@@ -24,6 +25,7 @@ export interface FtsResult {
   confidence: string;
   title: string | null;
   section_path: string;
+  effective_confidence?: number;
 }
 
 /**
@@ -47,7 +49,7 @@ export function ftsQuery(
   const rows = reader
     .prepare<
       [string, string, number],
-      { id: string; text: string; snippet: string; source_uri: string; node_id: string; rank: number; confidence: string; title: string | null; section_path: string }
+      { id: string; text: string; snippet: string; source_uri: string; node_id: string; rank: number; confidence: string; title: string | null; section_path: string; confidence_score: number; updated_at: number; kind: string }
     >(
       `SELECT c.id AS id, c.text AS text,
               snippet(pinakes_chunks_fts, 0, '', '', '…', 64) AS snippet,
@@ -55,7 +57,10 @@ export function ftsQuery(
               n.id AS node_id, bm25(pinakes_chunks_fts) AS rank,
               n.confidence AS confidence,
               n.title AS title,
-              n.section_path AS section_path
+              n.section_path AS section_path,
+              n.confidence_score AS confidence_score,
+              n.updated_at AS updated_at,
+              n.kind AS kind
          FROM pinakes_chunks_fts f
          JOIN pinakes_chunks c ON c.rowid = f.rowid
          JOIN pinakes_nodes n ON c.node_id = n.id
@@ -66,7 +71,19 @@ export function ftsQuery(
     )
     .all(scope, escaped, limit);
 
-  return rows;
+  const now = Date.now();
+  return rows.map((r) => ({
+    id: r.id,
+    text: r.text,
+    snippet: r.snippet,
+    source_uri: r.source_uri,
+    node_id: r.node_id,
+    rank: r.rank,
+    confidence: r.confidence,
+    title: r.title,
+    section_path: r.section_path,
+    effective_confidence: effectiveConfidence(r.confidence_score, r.updated_at, r.kind, now),
+  }));
 }
 
 /**
