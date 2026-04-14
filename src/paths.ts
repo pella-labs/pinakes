@@ -23,7 +23,7 @@
  *         manifest.json                           # project manifest
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 
@@ -152,6 +152,47 @@ export function ensurePinakesGitignore(projectRoot: string): void {
   if (existsSync(gitignorePath)) return;
   mkdirSync(pinakesDir, { recursive: true });
   writeFileSync(gitignorePath, PINAKES_GITIGNORE_CONTENT, 'utf-8');
+}
+
+// ---------------------------------------------------------------------------
+// Agent instruction file (CLAUDE.md / AGENTS.md)
+// ---------------------------------------------------------------------------
+
+const PINAKES_AGENT_MARKER = '<!-- pinakes-instructions -->';
+
+const PINAKES_AGENT_BLOCK = `
+${PINAKES_AGENT_MARKER}
+## Pinakes Knowledge Base
+
+This project has a curated knowledge base managed by Pinakes. **Always use the \`knowledge_search\` MCP tool as your first action** when you need to understand anything about this project — architecture, conventions, decisions, requirements, data models, deployment, testing strategy, or how subsystems relate. The knowledge base is faster and more token-efficient than reading raw source files. Only fall back to Grep/Read/Glob after checking the knowledge base, or when you need exact symbols or to make code changes.
+`;
+
+/**
+ * Ensure Pinakes knowledge base instructions are present in both
+ * `CLAUDE.md` and `AGENTS.md`. Covers all major coding agents:
+ * Claude Code, Codex, OpenCode, Cursor, Goose, etc.
+ *
+ * Idempotent — skips files that already contain the marker comment.
+ * Creates the file if it doesn't exist; appends if it does.
+ */
+export function ensureAgentInstructions(projectRoot: string): void {
+  const root = resolveAbs(projectRoot);
+  ensureInstructionsInFile(resolve(root, 'CLAUDE.md'));
+  ensureInstructionsInFile(resolve(root, 'AGENTS.md'));
+}
+
+function ensureInstructionsInFile(filePath: string): void {
+  if (existsSync(filePath)) {
+    appendIfMissing(filePath);
+  } else {
+    writeFileSync(filePath, PINAKES_AGENT_BLOCK.trimStart(), 'utf-8');
+  }
+}
+
+function appendIfMissing(filePath: string): void {
+  const content = readFileSync(filePath, 'utf-8');
+  if (content.includes(PINAKES_AGENT_MARKER)) return;
+  writeFileSync(filePath, content.trimEnd() + '\n' + PINAKES_AGENT_BLOCK, 'utf-8');
 }
 
 /**

@@ -264,9 +264,16 @@ export const pinakesClaims = sqliteTable('pinakes_claims', {
   topic: text('topic').notNull(),
   claim: text('claim').notNull(),
   extractedAt: integer('extracted_at').notNull(),
+  /** Phase 11.2: version counter, incremented on each supersession */
+  version: integer('version').notNull().default(1),
+  /** Phase 11.2: FK to the claim that replaced this one (null = retired without successor) */
+  supersededBy: integer('superseded_by'),
+  /** Phase 11.2: epoch ms when this claim was superseded (null = active) */
+  supersededAt: integer('superseded_at'),
 }, (table) => [
   index('idx_claims_topic').on(table.scope, table.topic),
   index('idx_claims_source').on(table.scope, table.sourceUri),
+  index('idx_claims_superseded').on(table.supersededAt),
 ]);
 
 // ----------------------------------------------------------------------------

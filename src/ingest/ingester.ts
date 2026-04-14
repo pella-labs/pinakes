@@ -332,7 +332,7 @@ export class IngesterService {
 
       for (const node of planned) {
         const sectionTokenCount = countTokens(node.section.content);
-        const confidenceScore = confidence === 'inferred' ? 0.5 : confidence === 'ambiguous' ? 0.3 : 0.7;
+        const confidenceScore = confidence === 'crystallized' ? 0.8 : confidence === 'inferred' ? 0.5 : confidence === 'ambiguous' ? 0.3 : 0.7;
         insertNode.run(
           node.nodeId,
           this.scope,

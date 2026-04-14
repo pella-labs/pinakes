@@ -93,7 +93,7 @@ export async function contradictionScan(
   // Get all claims grouped by topic
   const allClaims = bundle.writer
     .prepare<[string], { topic: string; claim: string; source_uri: string }>(
-      `SELECT topic, claim, source_uri FROM pinakes_claims WHERE scope = ? ORDER BY topic`,
+      `SELECT topic, claim, source_uri FROM pinakes_claims WHERE scope = ? AND superseded_at IS NULL ORDER BY topic`,
     )
     .all(scope);
 

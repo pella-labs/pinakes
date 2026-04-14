@@ -191,13 +191,15 @@ describe('cli/audit-wiki synthesis stubs (Phase 9.5 D43)', () => {
     const count = await generateSynthesisStubs(gaps, contexts, wikiRoot, provider);
 
     expect(count).toBe(1);
-    const draftPath = join(wikiRoot, '_audit-drafts', 'docker.md');
-    expect(existsSync(draftPath)).toBe(true);
-    const content = readFileSync(draftPath, 'utf-8');
+    const pagePath = join(wikiRoot, 'docker.md');
+    expect(existsSync(pagePath)).toBe(true);
+    const content = readFileSync(pagePath, 'utf-8');
     expect(content).toContain('Docker');
+    // Should have inferred confidence frontmatter
+    expect(content).toContain('confidence: inferred');
   });
 
-  it('writes stubs to _audit-drafts, NOT wiki root', async () => {
+  it('writes stubs directly to wiki root', async () => {
     const gaps = [makeGap('OAuth2', 15)];
     const contexts: GapContext[] = [{
       topic: 'OAuth2',
@@ -207,9 +209,7 @@ describe('cli/audit-wiki synthesis stubs (Phase 9.5 D43)', () => {
     const provider = mockLlmProvider('# OAuth2\n\nOAuth2 provides SSO.');
     await generateSynthesisStubs(gaps, contexts, wikiRoot, provider);
 
-    // Stub should be in _audit-drafts/, not wiki root
-    expect(existsSync(join(wikiRoot, '_audit-drafts', 'oauth2.md'))).toBe(true);
-    expect(existsSync(join(wikiRoot, 'oauth2.md'))).toBe(false);
+    expect(existsSync(join(wikiRoot, 'oauth2.md'))).toBe(true);
   });
 
   it('skips gaps with no context mentions', async () => {
@@ -244,7 +244,7 @@ describe('cli/audit-wiki synthesis stubs (Phase 9.5 D43)', () => {
     const count = await generateSynthesisStubs(gaps, contexts, wikiRoot, provider);
 
     expect(count).toBe(1); // TopicB succeeded
-    expect(existsSync(join(wikiRoot, '_audit-drafts', 'topicb.md'))).toBe(true);
+    expect(existsSync(join(wikiRoot, 'topicb.md'))).toBe(true);
   });
 
   it('does not generate stubs when flag is not set', () => {

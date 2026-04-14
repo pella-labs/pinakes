@@ -59,8 +59,8 @@ export interface SectionNode {
   depth: number;
 }
 
-/** Confidence level for provenance tracking (Phase 6). */
-export type Confidence = 'extracted' | 'inferred' | 'ambiguous';
+/** Confidence level for provenance tracking (Phase 6, extended Phase 11.3). */
+export type Confidence = 'extracted' | 'inferred' | 'ambiguous' | 'crystallized';
 
 /**
  * Detect confidence from YAML frontmatter in a markdown file.
@@ -76,6 +76,7 @@ export function detectConfidence(source: string): Confidence {
   if (!fm) return 'extracted';
 
   // Check explicit confidence field first
+  if (fm.confidence === 'crystallized') return 'crystallized';
   if (fm.confidence === 'inferred') return 'inferred';
   if (fm.confidence === 'ambiguous') return 'ambiguous';
 

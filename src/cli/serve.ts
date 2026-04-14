@@ -7,6 +7,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 import { closeDb, openDb, type DbBundle } from '../db/client.js';
+import { CrystallizationScheduler } from './crystallize-scheduler.js';
 import { Repository } from '../db/repository.js';
 import { ChokidarWatcher } from '../ingest/chokidar.js';
 import { RepoMirrorWatcher } from '../ingest/repo-mirror.js';
@@ -29,6 +30,7 @@ import {
   pinakesRoot,
   legacyProjectWikiPath,
   ensurePinakesGitignore,
+  ensureAgentInstructions,
 } from '../paths.js';
 import { writeAuditRow, type AuditEntry } from '../observability/audit.js';
 import { child, logger } from '../observability/logger.js';
@@ -82,9 +84,10 @@ interface ServerHandle {
 export async function buildServer(options: ServeOptions): Promise<ServerHandle> {
   const projectRoot = resolveAbs(options.projectRoot ?? process.cwd());
 
-  // Ensure .pinakes/.gitignore and .pinakesignore exist before any wiki operations
+  // Ensure .pinakes/.gitignore, .pinakesignore, and agent instructions exist
   ensurePinakesGitignore(projectRoot);
   ensurePinakesIgnoreFile(projectRoot);
+  ensureAgentInstructions(projectRoot);
 
   // Migrate wiki from old centralized location to in-repo path
   migrateLegacyWikiToInRepo(projectRoot);
@@ -286,6 +289,12 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     }
   }
 
+  // Step 8: crystallization scheduler — auto-distill coding sessions into wiki.
+  // Three trigger layers: startup catch-up, commit poll (60s), time fallback (4h).
+  // Rate-limited to at most once per hour.
+  const crystallizeScheduler = new CrystallizationScheduler(projectRoot, projectBundle.writer);
+  crystallizeScheduler.start();
+
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
@@ -293,6 +302,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     logger.info({ signal }, 'pinakes shutting down');
     try {
       clearInterval(healthCheckTimer);
+      crystallizeScheduler.stop();
       if (ignoreWatcher) await ignoreWatcher.close();
       await repoMirror.stop();
       await projectWatcher.stop();

@@ -1,5 +1,5 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 
@@ -13,6 +13,7 @@ import {
   personalWikiPath as defaultPersonalWikiPath,
   personalDbPath as defaultPersonalDbPath,
 } from '../paths.js';
+import { queryRecentlySuperseded, type SupersededClaim } from './claims.js';
 import { contradictionScan, type ContradictionResult } from './contradiction.js';
 import { createProgressReporter } from './progress.js';
 
@@ -43,6 +44,7 @@ export interface WikiAuditResult {
   gaps_found: number;
   topology_gaps: number;
   stubs_generated: number;
+  superseded_claims: number;
   audit_report_path: string;
 }
 
@@ -127,10 +129,23 @@ export async function auditWikiCommand(opts: WikiAuditOptions): Promise<WikiAudi
       );
     }
 
-    // 5. Generate audit report (D46 restructured: contradictions, gaps, health)
+    // 5. Query recently superseded claims for "Claim Evolution" section (Phase 11.2)
+    const lastAuditTs = bundle.writer
+      .prepare<[string], { value: string }>(`SELECT value FROM pinakes_meta WHERE key = ?`)
+      .get('last_audit_ts');
+    const sinceTs = lastAuditTs ? parseInt(lastAuditTs.value, 10) : undefined;
+    const supersededClaims = queryRecentlySuperseded(bundle.writer, scope, sinceTs);
+
+    // 6. Generate audit report (D46 restructured: contradictions, gaps, health, claim evolution)
     const healthMetrics = getHealthMetrics(bundle.writer, scope);
     const reportPath = join(wikiPath, '_audit-report.md');
-    writeAuditReport(reportPath, contradictions, filteredGaps, topoGaps, gapContexts, healthMetrics, stubsGenerated);
+    writeAuditReport(reportPath, contradictions, filteredGaps, topoGaps, gapContexts, healthMetrics, stubsGenerated, supersededClaims);
+
+    // Stamp audit timestamp for next run's "since" filter
+    bundle.writer
+      .prepare(`INSERT OR REPLACE INTO pinakes_meta (key, value) VALUES ('last_audit_ts', ?)`)
+      .run(String(Date.now()));
+
     // eslint-disable-next-line no-console
     console.log(`\nAudit report written to: ${reportPath}`);
 
@@ -139,6 +154,7 @@ export async function auditWikiCommand(opts: WikiAuditOptions): Promise<WikiAudi
       gaps_found: filteredGaps.length,
       topology_gaps: topoGaps.length,
       stubs_generated: stubsGenerated,
+      superseded_claims: supersededClaims.length,
       audit_report_path: reportPath,
     };
   } finally {
@@ -318,15 +334,11 @@ export async function generateSynthesisStubs(
   llmProvider: LlmProvider,
   progress?: ReturnType<typeof createProgressReporter>,
 ): Promise<number> {
-  const draftsDir = resolve(wikiRoot, '_audit-drafts');
-  mkdirSync(draftsDir, { recursive: true });
-
-  // Ensure _audit-drafts is gitignored
-  ensureGitignored(wikiRoot, '_audit-drafts/');
+  mkdirSync(wikiRoot, { recursive: true });
 
   const MAX_STUBS = 20;
   const toGenerate = gaps.slice(0, MAX_STUBS);
-  progress?.startPhase('Phase 3/3: Generating synthesis drafts', toGenerate.length);
+  progress?.startPhase('Phase 3/3: Generating synthesis pages', toGenerate.length);
 
   let generated = 0;
   for (const gap of toGenerate) {
@@ -346,7 +358,7 @@ export async function generateSynthesisStubs(
       continue;
     }
 
-    const filePath = join(draftsDir, `${slug}.md`);
+    const filePath = join(wikiRoot, `${slug}.md`);
 
     try {
       const excerpts = ctx.mentions
@@ -359,29 +371,18 @@ export async function generateSynthesisStubs(
         maxTokens: 1000,
       });
 
-      writeFileSync(filePath, content, 'utf-8');
+      // Add inferred confidence frontmatter — stubs are synthesized, not crystallized
+      const frontmatter = '---\nconfidence: inferred\nsource: audit-wiki\n---\n\n';
+      writeFileSync(filePath, frontmatter + content, 'utf-8');
       generated++;
-      progress?.tick(gap.topic, 'draft created');
+      progress?.tick(gap.topic, 'page created');
     } catch (err) {
       progress?.tick(gap.topic, `failed: ${err instanceof Error ? err.message.slice(0, 60) : err}`);
     }
   }
 
-  progress?.endPhase(`${generated} drafts written to _audit-drafts/`);
+  progress?.endPhase(`${generated} pages written to wiki`);
   return generated;
-}
-
-function ensureGitignored(wikiRoot: string, entry: string): void {
-  // Look for .gitignore in the .pinakes parent directory
-  const pinakesDir = resolve(wikiRoot, '..');
-  const gitignorePath = join(pinakesDir, '.gitignore');
-
-  if (!existsSync(gitignorePath)) return;
-
-  const content = readFileSync(gitignorePath, 'utf-8');
-  if (content.includes(entry)) return;
-
-  appendFileSync(gitignorePath, `\n${entry}\n`, 'utf-8');
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +433,7 @@ function writeAuditReport(
   gapContexts: GapContext[],
   health: HealthMetrics,
   stubsGenerated = 0,
+  supersededClaims: SupersededClaim[] = [],
 ): void {
   const lines = [
     '# Wiki Audit Report',
@@ -504,6 +506,29 @@ function writeAuditReport(
   lines.push(`| Nodes | ${health.node_count} |`);
   lines.push(`| Chunks | ${health.chunk_count} |`);
   lines.push(`| Edges | ${health.edge_count} |`);
+  lines.push('');
+
+  // Section 4: Claim Evolution (Phase 11.2)
+  lines.push('## Claim Evolution');
+  lines.push('');
+  if (supersededClaims.length === 0) {
+    lines.push('*No claims superseded since last audit*');
+  } else {
+    lines.push(`**${supersededClaims.length} claims evolved** since last audit`);
+    lines.push('');
+    for (const sc of supersededClaims.slice(0, 20)) {
+      const date = new Date(sc.superseded_at).toISOString().split('T')[0];
+      if (sc.new_claim) {
+        lines.push(`- **${sc.topic}** (${sc.source_uri}, ${date})`);
+        lines.push(`  - Previously (v${sc.old_version}): "${truncate(sc.old_claim, 120)}"`);
+        lines.push(`  - Now (v${sc.new_version}): "${truncate(sc.new_claim!, 120)}"`);
+      } else {
+        lines.push(`- **${sc.topic}** (${sc.source_uri}, ${date}) -- *retired*`);
+        lines.push(`  - Was (v${sc.old_version}): "${truncate(sc.old_claim, 120)}"`);
+      }
+      lines.push('');
+    }
+  }
   lines.push('');
 
   // Generated drafts section

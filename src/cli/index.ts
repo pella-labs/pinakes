@@ -2,6 +2,7 @@
 import { auditCommand, renderAudit } from './audit.js';
 import { auditWikiCommand } from './audit-wiki.js';
 import { contradictionScanCommand } from './contradiction-cli.js';
+import { crystallizeCommand } from './crystallize.js';
 import { loadIgnorePatterns, cleanIgnoredFromWiki } from '../init/ignore.js';
 import {
   resolveAbs,
@@ -220,6 +221,34 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'crystallize': {
+      const includeRaw = getString(flags, 'include');
+      const excludeRaw = getString(flags, 'exclude');
+      const result = await crystallizeCommand({
+        projectRoot: getString(flags, 'project-root'),
+        dbPath: getString(flags, 'db-path'),
+        since: getString(flags, 'since'),
+        commits: getString(flags, 'commits')
+          ? parseInt(getString(flags, 'commits')!, 10)
+          : undefined,
+        include: includeRaw ? includeRaw.split(',') : undefined,
+        exclude: excludeRaw ? excludeRaw.split(',') : undefined,
+        minLines: getString(flags, 'min-lines')
+          ? parseInt(getString(flags, 'min-lines')!, 10)
+          : undefined,
+      });
+      if (result.skipped_reason) {
+        // eslint-disable-next-line no-console
+        console.log(`Skipped: ${result.skipped_reason}`);
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(
+          `\nCrystallization complete: ${result.drafts_created} page(s) written to wiki`,
+        );
+      }
+      break;
+    }
+
     case undefined:
     case 'help':
     case '-h':
@@ -241,7 +270,8 @@ Usage:
   pinakes purge              --scope <project|personal> --confirm [--project-root <dir>] [--db-path <path>]
   pinakes export             --scope <project|personal> [--out file.json] [--project-root <dir>] [--db-path <path>]
   pinakes import             --scope <project|personal> --in file.json [--project-root <dir>] [--db-path <path>]
-  pinakes contradiction-scan [--scope project|personal] [--project-root <dir>] [--db-path <path>]`);
+  pinakes contradiction-scan [--scope project|personal] [--project-root <dir>] [--db-path <path>]
+  pinakes crystallize        [--commits <n>] [--since <date>] [--min-lines <n>] [--include <globs>] [--exclude <globs>]`);
       break;
     }
 

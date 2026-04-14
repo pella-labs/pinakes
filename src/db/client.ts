@@ -209,7 +209,7 @@ export function openDb(path: string, options: OpenDbOptions = {}): DbBundle {
   if (runMigrations) {
     writer
       .prepare('INSERT OR IGNORE INTO pinakes_meta (key, value) VALUES (?, ?)')
-      .run('schema_version', '3');
+      .run('schema_version', '4');
   }
 
   logger.info({ path: absPath, sqliteVersion: versionRow.v }, 'opened SQLite db');

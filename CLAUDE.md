@@ -318,8 +318,9 @@ PINAKES_MAX_WRITE_SIZE=102400                       # max bytes per wiki write (
 ## Skills (Claude Code)
 
 - **`/audit-wiki`** — Deep agent-powered wiki audit. Runs the deterministic pipeline first (`pnpm run pinakes -- audit-wiki`), then does a deep content review finding cross-file contradictions, broken references, terminology inconsistencies, and stale info. Runs in a forked subagent. See `.claude/skills/audit-wiki/SKILL.md`.
+- **`/crystallize`** — Distill the current coding session into wiki knowledge pages. Analyzes git diffs, identifies decisions and learnings, writes pages directly to the wiki with `confidence: crystallized` (0.8). Also runs automatically via the `CrystallizationScheduler` in `serve` (commit poll, startup catch-up, 4h time fallback). See `.claude/skills/crystallize/SKILL.md`.
 
-For non-Claude-Code clients: use `pnpm run pinakes audit-wiki` directly for the pipeline-based audit.
+For non-Claude-Code clients: use `pnpm run pinakes audit-wiki` or `pnpm run pinakes crystallize` directly.
 
 ## Reference Documents
 
