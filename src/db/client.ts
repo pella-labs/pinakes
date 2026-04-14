@@ -201,8 +201,17 @@ export function openDb(path: string, options: OpenDbOptions = {}): DbBundle {
 
   // Step 6: run migrations. drizzle's migrate() is idempotent — it tracks
   // applied migrations in `__drizzle_migrations` and only runs new ones.
+  // If migrations fail (e.g., DB was created by an older version missing
+  // intermediate tables), nuke the DB and retry — markdown is canonical,
+  // rebuild is always safe.
   if (runMigrations) {
-    migrate(drizzleWriter, { migrationsFolder: MIGRATIONS_FOLDER });
+    try {
+      migrate(drizzleWriter, { migrationsFolder: MIGRATIONS_FOLDER });
+    } catch (err) {
+      logger.warn({ err, path: absPath }, 'migration failed — dropping all tables and retrying');
+      dropAllTables(writer);
+      migrate(drizzleWriter, { migrationsFolder: MIGRATIONS_FOLDER });
+    }
   }
 
   // Step 7: stamp schema_version=1 if absent. Subsequent phases bump this.
@@ -235,6 +244,56 @@ export function closeDb(bundle: DbBundle): void {
     }
   }
   logger.debug({ path: bundle.path }, 'closed SQLite db');
+}
+
+// ----------------------------------------------------------------------------
+// Migration recovery
+// ----------------------------------------------------------------------------
+
+/**
+ * Drop all user tables and the Drizzle migration tracker so migrations can
+ * re-run from scratch. sqlite-vec virtual tables need special handling —
+ * they must be dropped before their shadow tables (which are auto-created).
+ * This is the nuclear option for DBs created by older Pinakes versions
+ * where intermediate migrations were never applied.
+ */
+function dropAllTables(db: BetterSqliteDatabase): void {
+  const tables = db
+    .prepare(
+      `SELECT name, type FROM sqlite_master
+       WHERE type IN ('table', 'view')
+         AND name NOT LIKE 'sqlite_%'
+       ORDER BY name`,
+    )
+    .all() as Array<{ name: string; type: string }>;
+
+  // Drop vec virtual tables first (they create shadow tables)
+  for (const t of tables) {
+    if (t.name.endsWith('_vec') && !t.name.includes('_vec_')) {
+      try { db.exec(`DROP TABLE IF EXISTS "${t.name}"`); } catch { /* ignore */ }
+    }
+  }
+
+  // Drop FTS virtual tables
+  for (const t of tables) {
+    if (t.name.endsWith('_fts') && !t.name.includes('_fts_')) {
+      try { db.exec(`DROP TABLE IF EXISTS "${t.name}"`); } catch { /* ignore */ }
+    }
+  }
+
+  // Drop remaining tables
+  const remaining = db
+    .prepare(
+      `SELECT name FROM sqlite_master
+       WHERE type = 'table'
+         AND name NOT LIKE 'sqlite_%'
+       ORDER BY name`,
+    )
+    .all() as Array<{ name: string }>;
+
+  for (const t of remaining) {
+    try { db.exec(`DROP TABLE IF EXISTS "${t.name}"`); } catch { /* ignore */ }
+  }
 }
 
 // ----------------------------------------------------------------------------
