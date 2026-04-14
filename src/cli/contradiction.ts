@@ -16,6 +16,7 @@ import type { DbBundle } from '../db/client.js';
 import type { LlmProvider } from '../llm/provider.js';
 import type { Embedder } from '../retrieval/embedder.js';
 import { logger } from '../observability/logger.js';
+import { extractAllClaims } from './claims.js';
 import type { ProgressReporter } from './progress.js';
 
 // ----------------------------------------------------------------------------
@@ -89,6 +90,9 @@ export async function contradictionScan(
       return { scanned_pairs: 0, topics_scanned: 0, claims_extracted: 0, contradictions: [], rate_limited: true };
     }
   }
+
+  // Extract claims from wiki files (populates pinakes_claims if empty or stale)
+  await extractAllClaims(bundle.writer, scope, llmProvider);
 
   // Get all claims grouped by topic
   const allClaims = bundle.writer
