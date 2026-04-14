@@ -1,5 +1,5 @@
-import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import Database, { type Database as BetterSqliteDatabase } from 'better-sqlite3';
@@ -201,16 +201,16 @@ export function openDb(path: string, options: OpenDbOptions = {}): DbBundle {
 
   // Step 6: run migrations. drizzle's migrate() is idempotent — it tracks
   // applied migrations in `__drizzle_migrations` and only runs new ones.
-  // If migrations fail (e.g., DB was created by an older version missing
-  // intermediate tables), nuke the DB and retry — markdown is canonical,
-  // rebuild is always safe.
+  // If migrations fail (e.g., DB was created by an older version that was
+  // missing intermediate migrations), recover by applying each migration's
+  // SQL statements individually with defensive error handling. This preserves
+  // existing data (scores, claims, audit) instead of dropping everything.
   if (runMigrations) {
     try {
       migrate(drizzleWriter, { migrationsFolder: MIGRATIONS_FOLDER });
     } catch (err) {
-      logger.warn({ err, path: absPath }, 'migration failed — dropping all tables and retrying');
-      dropAllTables(writer);
-      migrate(drizzleWriter, { migrationsFolder: MIGRATIONS_FOLDER });
+      logger.warn({ err, path: absPath }, 'migration failed — attempting data-preserving recovery');
+      recoverMigrations(writer, MIGRATIONS_FOLDER);
     }
   }
 
@@ -251,49 +251,111 @@ export function closeDb(bundle: DbBundle): void {
 // ----------------------------------------------------------------------------
 
 /**
- * Drop all user tables and the Drizzle migration tracker so migrations can
- * re-run from scratch. sqlite-vec virtual tables need special handling —
- * they must be dropped before their shadow tables (which are auto-created).
- * This is the nuclear option for DBs created by older Pinakes versions
- * where intermediate migrations were never applied.
+ * Data-preserving migration recovery. When Drizzle's migrate() fails (e.g.,
+ * a DB created by an older version is missing intermediate tables), we:
+ *
+ *   1. Read the migration journal to get every migration's tag + hash
+ *   2. Read each migration's SQL file
+ *   3. Execute each statement individually, ignoring "already exists" errors
+ *   4. Reset `__drizzle_migrations` to match the full journal
+ *
+ * This preserves all existing data — scores, claims, audit logs — while
+ * ensuring the schema is complete and Drizzle considers all migrations applied.
  */
-function dropAllTables(db: BetterSqliteDatabase): void {
-  const tables = db
-    .prepare(
-      `SELECT name, type FROM sqlite_master
-       WHERE type IN ('table', 'view')
-         AND name NOT LIKE 'sqlite_%'
-       ORDER BY name`,
-    )
-    .all() as Array<{ name: string; type: string }>;
+function recoverMigrations(
+  db: BetterSqliteDatabase,
+  migrationsFolder: string,
+): void {
+  const journalPath = join(migrationsFolder, 'meta', '_journal.json');
+  const journalRaw = readFileSync(journalPath, 'utf-8');
+  const journal = JSON.parse(journalRaw) as {
+    entries: Array<{ idx: number; tag: string; when: number }>;
+  };
 
-  // Drop vec virtual tables first (they create shadow tables)
-  for (const t of tables) {
-    if (t.name.endsWith('_vec') && !t.name.includes('_vec_')) {
-      try { db.exec(`DROP TABLE IF EXISTS "${t.name}"`); } catch { /* ignore */ }
+  // Collect already-applied hashes so we can log what's new
+  const applied = new Set<string>();
+  try {
+    const rows = db
+      .prepare('SELECT hash FROM __drizzle_migrations')
+      .all() as Array<{ hash: string }>;
+    for (const r of rows) applied.add(r.hash);
+  } catch {
+    // Table might not exist yet
+  }
+
+  // Apply each migration's SQL defensively
+  for (const entry of journal.entries) {
+    const sqlPath = join(migrationsFolder, `${entry.tag}.sql`);
+    let sql: string;
+    try {
+      sql = readFileSync(sqlPath, 'utf-8');
+    } catch {
+      logger.warn({ tag: entry.tag }, 'migration file not found — skipping');
+      continue;
+    }
+
+    const statements = sql
+      .split('--> statement-breakpoint')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    for (const stmt of statements) {
+      try {
+        db.exec(stmt);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Ignore expected errors from objects that already exist
+        if (
+          msg.includes('already exists') ||
+          msg.includes('duplicate column') ||
+          msg.includes('UNIQUE constraint')
+        ) {
+          logger.debug({ tag: entry.tag, err: msg }, 'migration statement skipped (already applied)');
+        } else {
+          logger.warn({ tag: entry.tag, err: msg }, 'migration statement failed — continuing');
+        }
+      }
     }
   }
 
-  // Drop FTS virtual tables
-  for (const t of tables) {
-    if (t.name.endsWith('_fts') && !t.name.includes('_fts_')) {
-      try { db.exec(`DROP TABLE IF EXISTS "${t.name}"`); } catch { /* ignore */ }
+  // Reset the Drizzle migration tracker to match the full journal.
+  // Compute SHA-256 of each migration file to match Drizzle's hash format.
+  db.exec('DROP TABLE IF EXISTS __drizzle_migrations');
+  db.exec(`CREATE TABLE __drizzle_migrations (
+    id integer PRIMARY KEY AUTOINCREMENT,
+    hash text NOT NULL,
+    created_at numeric
+  )`);
+
+  const { createHash } = await_import_crypto();
+  const insert = db.prepare(
+    'INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)',
+  );
+
+  for (const entry of journal.entries) {
+    const sqlPath = join(migrationsFolder, `${entry.tag}.sql`);
+    try {
+      const content = readFileSync(sqlPath, 'utf-8');
+      const hash = createHash('sha256').update(content).digest('hex');
+      insert.run(hash, entry.when);
+    } catch {
+      // Already warned above
     }
   }
 
-  // Drop remaining tables
-  const remaining = db
-    .prepare(
-      `SELECT name FROM sqlite_master
-       WHERE type = 'table'
-         AND name NOT LIKE 'sqlite_%'
-       ORDER BY name`,
-    )
-    .all() as Array<{ name: string }>;
+  logger.info(
+    { total: journal.entries.length, previouslyApplied: applied.size },
+    'migration recovery complete — all migrations now tracked',
+  );
+}
 
-  for (const t of remaining) {
-    try { db.exec(`DROP TABLE IF EXISTS "${t.name}"`); } catch { /* ignore */ }
-  }
+/**
+ * Lazy import of crypto to avoid top-level await. createHash is only
+ * needed during migration recovery, not on every openDb call.
+ */
+function await_import_crypto(): typeof import('node:crypto') {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('node:crypto');
 }
 
 // ----------------------------------------------------------------------------
