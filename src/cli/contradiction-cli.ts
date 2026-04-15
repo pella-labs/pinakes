@@ -2,6 +2,7 @@ import { closeDb, openDb } from '../db/client.js';
 import { createLlmProvider } from '../llm/provider.js';
 import {
   resolveAbs,
+  resolveProjectRoot,
   projectWikiPath as defaultProjectWikiPath,
   projectDbPath as defaultProjectDbPath,
   personalWikiPath as defaultPersonalWikiPath,
@@ -18,7 +19,7 @@ export async function contradictionScanCommand(opts: {
   projectRoot?: string;
   dbPath?: string;
 }): Promise<ContradictionResult> {
-  const projectRoot = resolveAbs(opts.projectRoot ?? process.cwd());
+  const projectRoot = resolveProjectRoot(opts.projectRoot);
   const wikiPath = opts.scope === 'personal'
     ? defaultPersonalWikiPath()
     : defaultProjectWikiPath(projectRoot);

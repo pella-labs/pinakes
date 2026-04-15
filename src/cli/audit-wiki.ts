@@ -8,6 +8,7 @@ import { queryGaps, type GapRow } from '../gaps/detector.js';
 import { createLlmProvider, type LlmProvider } from '../llm/provider.js';
 import {
   resolveAbs,
+  resolveProjectRoot,
   projectWikiPath as defaultProjectWikiPath,
   projectDbPath as defaultProjectDbPath,
   personalWikiPath as defaultPersonalWikiPath,
@@ -50,7 +51,7 @@ export interface WikiAuditResult {
 
 export async function auditWikiCommand(opts: WikiAuditOptions): Promise<WikiAuditResult> {
   const scope = opts.scope ?? 'project';
-  const projectRoot = resolveAbs(opts.projectRoot ?? process.cwd());
+  const projectRoot = resolveProjectRoot(opts.projectRoot);
   const wikiPath = scope === 'personal'
     ? defaultPersonalWikiPath()
     : defaultProjectWikiPath(projectRoot);

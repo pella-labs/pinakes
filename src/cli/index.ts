@@ -4,8 +4,9 @@ import { auditWikiCommand } from './audit-wiki.js';
 import { contradictionScanCommand } from './contradiction-cli.js';
 import { crystallizeCommand } from './crystallize.js';
 import { loadIgnorePatterns, cleanIgnoredFromWiki } from '../init/ignore.js';
+import { reconcileStrayPinakesDirs } from '../init/reconcile.js';
 import {
-  resolveAbs,
+  resolveProjectRoot,
   projectWikiPath as defaultProjectWikiPath,
 } from '../paths.js';
 import { exportCommand, renderExport } from './export.js';
@@ -152,12 +153,32 @@ async function main(): Promise<void> {
     }
 
     case 'clean-wiki': {
-      const projectRoot = resolveAbs(getString(flags, 'project-root') ?? process.cwd());
+      const projectRoot = resolveProjectRoot(getString(flags, 'project-root'));
       const wikiRoot = defaultProjectWikiPath(projectRoot);
       const patterns = loadIgnorePatterns(projectRoot);
       const removed = cleanIgnoredFromWiki(wikiRoot, patterns);
       // eslint-disable-next-line no-console
       console.log(`Removed ${removed} ignored file(s) from wiki.`);
+      break;
+    }
+
+    case 'reconcile': {
+      const projectRoot = resolveProjectRoot(getString(flags, 'project-root'));
+      const wikiRoot = defaultProjectWikiPath(projectRoot);
+      const result = reconcileStrayPinakesDirs(projectRoot, wikiRoot);
+      if (result.strays.length === 0) {
+        // eslint-disable-next-line no-console
+        console.log(`No stray .pinakes directories found under ${projectRoot}.`);
+      } else {
+        for (const stray of result.strays) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `${stray.strayPath}: recovered ${stray.filesRecovered.length} file(s), ` +
+              `skipped ${stray.filesSkipped.length} (already existed), ` +
+              `removed=${stray.removed}`,
+          );
+        }
+      }
       break;
     }
 
@@ -278,6 +299,7 @@ Usage:
   pinakes audit              [--n <count>] [--scope project|personal] [--project-root <dir>] [--db-path <path>]
   pinakes audit-wiki         [--project-root <dir>] [--db-path <path>]
   pinakes clean-wiki         [--project-root <dir>]
+  pinakes reconcile          [--project-root <dir>]
   pinakes purge              --scope <project|personal> --confirm [--project-root <dir>] [--db-path <path>]
   pinakes export             --scope <project|personal> [--out file.json] [--project-root <dir>] [--db-path <path>]
   pinakes import             --scope <project|personal> --in file.json [--project-root <dir>] [--db-path <path>]

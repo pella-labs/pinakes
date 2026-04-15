@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 
 import {
   resolveAbs,
+  resolveProjectRoot,
   projectWikiPath as defaultProjectWikiPath,
   projectDbPath as defaultProjectDbPath,
   personalWikiPath as defaultPersonalWikiPath,
@@ -74,7 +75,7 @@ export interface RebuildSummary {
 export async function rebuildCommand(options: RebuildOptions): Promise<RebuildSummary[]> {
   const summaries: RebuildSummary[] = [];
 
-  const projectRoot = resolveAbs(options.projectRoot ?? process.cwd());
+  const projectRoot = resolveProjectRoot(options.projectRoot);
   const projectWiki = defaultProjectWikiPath(projectRoot);
   if (!existsSync(projectWiki)) {
     throw new Error(`wiki path does not exist: ${projectWiki}`);

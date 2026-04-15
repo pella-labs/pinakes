@@ -13,12 +13,14 @@ import { ChokidarWatcher } from '../ingest/chokidar.js';
 import { scanRepoMarkdownFiles } from '../init/scanner.js';
 import { copyMarkdownToWiki } from '../init/copy.js';
 import { ensurePinakesIgnoreFile } from '../init/ignore.js';
+import { reconcileStrayPinakesDirs } from '../init/reconcile.js';
 import { IngesterService } from '../ingest/ingester.js';
 import { checkConsistency, listMarkdownFiles } from '../ingest/manifest.js';
 import { executeToolConfig, makeExecuteHandler } from '../mcp/tools/execute.js';
 import { searchToolConfig, makeSearchHandler } from '../mcp/tools/search.js';
 import {
   resolveAbs,
+  resolveProjectRoot,
   projectWikiPath as defaultProjectWikiPath,
   projectDbPath as defaultProjectDbPath,
   projectAuditJsonlPath,
@@ -81,7 +83,7 @@ interface ServerHandle {
  * through the CLI argv path.
  */
 export async function buildServer(options: ServeOptions): Promise<ServerHandle> {
-  const projectRoot = resolveAbs(options.projectRoot ?? process.cwd());
+  const projectRoot = resolveProjectRoot(options.projectRoot);
 
   // Ensure .pinakes/.gitignore, .pinakesignore, and agent instructions exist
   ensurePinakesGitignore(projectRoot);
@@ -92,6 +94,22 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
   migrateLegacyWikiToInRepo(projectRoot);
 
   const projectWiki = defaultProjectWikiPath(projectRoot);
+
+  // Recover stray `.pinakes/` dirs left behind by earlier subdir-cwd invocations.
+  // Runs before the wiki bootstrap so recovered files land in the canonical wiki
+  // even on a fresh project.
+  const reconciled = reconcileStrayPinakesDirs(projectRoot, projectWiki);
+  for (const stray of reconciled.strays) {
+    logger.warn(
+      {
+        strayPath: stray.strayPath,
+        filesRecovered: stray.filesRecovered.length,
+        filesSkipped: stray.filesSkipped.length,
+        removed: stray.removed,
+      },
+      'reconciled stray .pinakes directory — markdown moved under wiki/recovered/',
+    );
+  }
   if (!existsSync(projectWiki)) {
     // First run only — bootstrap the wiki from repo markdown, then hand
     // ownership to `.pinakes/wiki/`. There is no continuous repo → wiki sync.
@@ -297,7 +315,7 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
  * handlers, listen forever.
  */
 export async function serveCommand(options: ServeOptions): Promise<void> {
-  logger.info({ projectRoot: options.projectRoot ?? process.cwd() }, 'pinakes starting');
+  logger.info({ projectRoot: resolveProjectRoot(options.projectRoot) }, 'pinakes starting');
 
   installSighupHandler();
 

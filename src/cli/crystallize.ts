@@ -11,6 +11,7 @@ import { countTokens } from '../gate/budget.js';
 import { createLlmProvider } from '../llm/provider.js';
 import {
   resolveAbs,
+  resolveProjectRoot,
   projectWikiPath as defaultProjectWikiPath,
   projectDbPath as defaultProjectDbPath,
 } from '../paths.js';
@@ -310,7 +311,7 @@ function getWikiContext(bundle: DbBundle): string {
 export async function crystallizeCommand(
   opts: CrystallizeOptions,
 ): Promise<CrystallizeResult> {
-  const projectRoot = resolveAbs(opts.projectRoot ?? process.cwd());
+  const projectRoot = resolveProjectRoot(opts.projectRoot);
   const wikiRoot = defaultProjectWikiPath(projectRoot);
 
   // 1. Git diff

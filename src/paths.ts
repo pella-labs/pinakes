@@ -25,7 +25,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,6 +34,34 @@ import { isAbsolute, resolve } from 'node:path';
 /** Resolve a path to absolute, using cwd if relative. */
 export function resolveAbs(p: string): string {
   return isAbsolute(p) ? p : resolve(process.cwd(), p);
+}
+
+/**
+ * Walk up from `startDir` looking for a `.git` entry (file or directory —
+ * git worktrees represent `.git` as a file). Returns the first ancestor that
+ * contains one, or `null` if none is found before hitting the filesystem root.
+ */
+export function findGitRoot(startDir: string): string | null {
+  let current = resolveAbs(startDir);
+  while (true) {
+    if (existsSync(resolve(current, '.git'))) return current;
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+/**
+ * Pick the canonical project root for a Pinakes invocation.
+ *
+ *   1. If `explicit` is provided (usually from `--project-root`), use it verbatim.
+ *   2. Otherwise, walk up from cwd looking for `.git` so subdir invocations
+ *      resolve to the same repo root and don't spawn a duplicate `.pinakes/`.
+ *   3. Fallback to cwd for non-git directories (scratch repos, test fixtures).
+ */
+export function resolveProjectRoot(explicit?: string): string {
+  if (explicit) return resolveAbs(explicit);
+  return findGitRoot(process.cwd()) ?? process.cwd();
 }
 
 /**
@@ -208,5 +236,5 @@ export function resolveCliDbPath(
     return personalDbPath();
   }
   if (options.dbPath) return resolveAbs(options.dbPath);
-  return projectDbPath(options.projectRoot ?? process.cwd());
+  return projectDbPath(resolveProjectRoot(options.projectRoot));
 }
