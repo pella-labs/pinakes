@@ -13,8 +13,8 @@ export interface CopyResult {
  * Copy markdown files from the project repo into the wiki directory,
  * preserving relative directory structure.
  *
- * Idempotent: skips files that already exist in the target. This allows
- * re-running `pinakes init` without overwriting curated wiki edits.
+ * Bootstrap-only behavior: skips files that already exist in the target so
+ * first-run import never overwrites curated wiki edits.
  *
  * @param files Absolute paths to source markdown files
  * @param projectRoot Absolute path to the project root

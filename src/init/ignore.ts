@@ -3,7 +3,7 @@ import { basename, join, relative, resolve } from 'node:path';
 
 import { logger } from '../observability/logger.js';
 
-// .pinakesignore — filter which repo .md files get copied into the wiki.
+// .pinakesignore — filter which repo .md files get bootstrapped into the wiki.
 //
 // Supports a subset of .gitignore syntax:
 //   dir/          → ignore everything under this top-level directory
@@ -90,7 +90,7 @@ export function loadIgnorePatterns(projectRoot: string): IgnorePattern[] {
   return patterns;
 }
 
-const DEFAULT_PINAKESIGNORE = `# .pinakesignore — controls which repo .md files get copied into the wiki.
+const DEFAULT_PINAKESIGNORE = `# .pinakesignore — controls which repo .md files get bootstrapped into .pinakes/wiki/.
 # Uses .gitignore-style patterns. Built-in defaults already exclude common
 # source directories (src/, bin/, crates/, examples/, etc.).
 # Add project-specific patterns below.
@@ -113,10 +113,10 @@ export function ensurePinakesIgnoreFile(projectRoot: string): void {
 
 /**
  * Remove wiki files that match the current ignore patterns.
- * Called when `.pinakesignore` changes to clean up previously-copied files.
+ * Used by the explicit `pinakes clean-wiki` command to prune previously
+ * bootstrapped files after changing `.pinakesignore`.
  */
 export function cleanIgnoredFromWiki(
-  _projectRoot: string,
   wikiRoot: string,
   patterns: IgnorePattern[],
 ): number {

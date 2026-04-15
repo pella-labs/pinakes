@@ -73,6 +73,12 @@ async function main(): Promise<void> {
   const subcommand = argv[0];
   const { flags } = parseFlags(argv.slice(1));
 
+  if ('wiki-path' in flags) {
+    throw new Error(
+      '`--wiki-path` is no longer supported. Use `--project-root <repo>` and store project knowledge in `<repo>/.pinakes/wiki/`.'
+    );
+  }
+
   switch (subcommand) {
     case 'serve': {
       await serveCommand({
@@ -110,6 +116,7 @@ async function main(): Promise<void> {
 
     case 'status': {
       const statuses = statusCommand({
+        projectRoot: getString(flags, 'project-root'),
         dbPath: getString(flags, 'db-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
       });
@@ -121,6 +128,7 @@ async function main(): Promise<void> {
     case 'audit': {
       const rows = auditCommand({
         n: getString(flags, 'n') ? parseInt(getString(flags, 'n')!, 10) : undefined,
+        projectRoot: getString(flags, 'project-root'),
         dbPath: getString(flags, 'db-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
         scope: (getString(flags, 'scope') as 'project' | 'personal') ?? undefined,
@@ -147,7 +155,7 @@ async function main(): Promise<void> {
       const projectRoot = resolveAbs(getString(flags, 'project-root') ?? process.cwd());
       const wikiRoot = defaultProjectWikiPath(projectRoot);
       const patterns = loadIgnorePatterns(projectRoot);
-      const removed = cleanIgnoredFromWiki(projectRoot, wikiRoot, patterns);
+      const removed = cleanIgnoredFromWiki(wikiRoot, patterns);
       // eslint-disable-next-line no-console
       console.log(`Removed ${removed} ignored file(s) from wiki.`);
       break;
@@ -158,6 +166,7 @@ async function main(): Promise<void> {
       const result = purgeCommand({
         scope,
         confirm: flags['confirm'] === true,
+        projectRoot: getString(flags, 'project-root'),
         dbPath: getString(flags, 'db-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
       });
@@ -172,6 +181,7 @@ async function main(): Promise<void> {
       const data = exportCommand({
         scope,
         out,
+        projectRoot: getString(flags, 'project-root'),
         dbPath: getString(flags, 'db-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
       });
@@ -190,6 +200,7 @@ async function main(): Promise<void> {
       const result = importCommand({
         scope,
         inFile: getRequiredString(flags, 'in'),
+        projectRoot: getString(flags, 'project-root'),
         dbPath: getString(flags, 'db-path'),
         profileDbPath: getString(flags, 'profile-db-path'),
       });

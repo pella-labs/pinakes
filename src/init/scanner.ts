@@ -6,8 +6,8 @@ import { logger } from '../observability/logger.js';
 import { loadIgnorePatterns, shouldIgnore } from './ignore.js';
 
 /**
- * Scan a project directory for markdown files, respecting .gitignore
- * and `.pinakesignore`.
+ * Scan a project directory for markdown files to bootstrap `.pinakes/wiki/`,
+ * respecting .gitignore and `.pinakesignore`.
  *
  * Primary strategy: `git ls-files` (fast, respects .gitignore).
  * Fallback: recursive walk with hardcoded excludes (non-git repos).

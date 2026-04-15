@@ -16,6 +16,7 @@ import { resolveCliDbPath } from '../paths.js';
 export interface ImportOptions {
   scope: 'project' | 'personal';
   inFile: string;
+  projectRoot?: string;
   dbPath?: string;
   profileDbPath?: string;
 }
@@ -130,4 +131,3 @@ export function importCommand(options: ImportOptions): ImportResult {
 export function renderImport(result: ImportResult): string {
   return `${result.scope}: imported ${result.nodes} nodes, ${result.edges} edges, ${result.chunks} chunks`;
 }
-

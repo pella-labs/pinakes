@@ -32,6 +32,11 @@ function parseArgs(argv: string[]): ParsedArgs {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (!arg) continue;
+    if (arg === '--wiki-path' || arg.startsWith('--wiki-path=')) {
+      throw new Error(
+        '`--wiki-path` is no longer supported. Use `--project-root <repo>` and keep project knowledge in `<repo>/.pinakes/wiki/`.'
+      );
+    }
     if (arg === '--project-root' && argv[i + 1]) {
       out.projectRoot = argv[i + 1];
       i++;

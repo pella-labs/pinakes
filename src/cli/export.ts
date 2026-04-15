@@ -22,6 +22,7 @@ import { resolveCliDbPath } from '../paths.js';
 export interface ExportOptions {
   scope: 'project' | 'personal';
   out?: string;
+  projectRoot?: string;
   dbPath?: string;
   profileDbPath?: string;
 }
@@ -90,4 +91,3 @@ export function renderExport(data: ExportData, outPath?: string): string {
   if (outPath) return `${line} → ${outPath}`;
   return line;
 }
-

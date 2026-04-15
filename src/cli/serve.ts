@@ -10,10 +10,9 @@ import { closeDb, openDb, type DbBundle } from '../db/client.js';
 import { CrystallizationScheduler } from './crystallize-scheduler.js';
 import { Repository } from '../db/repository.js';
 import { ChokidarWatcher } from '../ingest/chokidar.js';
-import { RepoMirrorWatcher } from '../ingest/repo-mirror.js';
 import { scanRepoMarkdownFiles } from '../init/scanner.js';
 import { copyMarkdownToWiki } from '../init/copy.js';
-import { ensurePinakesIgnoreFile, loadIgnorePatterns, cleanIgnoredFromWiki } from '../init/ignore.js';
+import { ensurePinakesIgnoreFile } from '../init/ignore.js';
 import { IngesterService } from '../ingest/ingester.js';
 import { checkConsistency, listMarkdownFiles } from '../ingest/manifest.js';
 import { executeToolConfig, makeExecuteHandler } from '../mcp/tools/execute.js';
@@ -94,14 +93,15 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
 
   const projectWiki = defaultProjectWikiPath(projectRoot);
   if (!existsSync(projectWiki)) {
-    // First run — seed wiki from all repo markdown files
+    // First run only — bootstrap the wiki from repo markdown, then hand
+    // ownership to `.pinakes/wiki/`. There is no continuous repo → wiki sync.
     const repoFiles = scanRepoMarkdownFiles(projectRoot);
     mkdirSync(projectWiki, { recursive: true });
     if (repoFiles.length > 0) {
       const copyResult = copyMarkdownToWiki(repoFiles, projectRoot, projectWiki);
       logger.info(
         { copied: copyResult.files_copied, skipped: copyResult.files_skipped, bytes: copyResult.total_bytes },
-        'seeded wiki from repo markdown files'
+        'bootstrapped wiki from repo markdown files'
       );
     } else {
       logger.info({ path: projectWiki }, 'created empty wiki directory (no .md files found in repo)');
@@ -154,31 +154,6 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
   await projectWatcher.start(makeOnEvent(projectIngester));
   if (personalWatcher && personalIngester) {
     await personalWatcher.start(makeOnEvent(personalIngester));
-  }
-
-  // Step 5b: repo mirror watcher — one-way sync from project root → wiki
-  const repoMirror = new RepoMirrorWatcher({
-    projectRoot,
-    wikiRoot: projectWiki,
-  });
-  await repoMirror.start();
-
-  // Step 5c: watch .pinakesignore for changes — clean wiki on update
-  const pinakesIgnorePath = resolve(projectRoot, '.pinakesignore');
-  let ignoreWatcher: import('chokidar').FSWatcher | null = null;
-  try {
-    const chokidarMod = await import('chokidar');
-    ignoreWatcher = chokidarMod.default.watch(pinakesIgnorePath, { ignoreInitial: true });
-    ignoreWatcher.on('change', () => {
-      logger.info('.pinakesignore changed — cleaning ignored files from wiki');
-      const patterns = loadIgnorePatterns(projectRoot);
-      const removed = cleanIgnoredFromWiki(projectRoot, projectWiki, patterns);
-      if (removed > 0) {
-        logger.info({ removed }, 'cleaned ignored files from wiki');
-      }
-    });
-  } catch (err) {
-    logger.warn({ err }, 'failed to watch .pinakesignore');
   }
 
   // Step 6: build the MCP server
@@ -303,8 +278,6 @@ export async function buildServer(options: ServeOptions): Promise<ServerHandle> 
     try {
       clearInterval(healthCheckTimer);
       crystallizeScheduler.stop();
-      if (ignoreWatcher) await ignoreWatcher.close();
-      await repoMirror.stop();
       await projectWatcher.stop();
       if (personalWatcher) await personalWatcher.stop();
       await mcp.close();

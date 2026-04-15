@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { loadIgnorePatterns, shouldIgnore } from '../../init/ignore.js';
+import { cleanIgnoredFromWiki, loadIgnorePatterns, shouldIgnore } from '../../init/ignore.js';
 
 describe('init/ignore', () => {
   let tmp: string;
@@ -112,6 +112,22 @@ describe('init/ignore', () => {
       expect(shouldIgnore('notes.draft.md', patterns)).toBe(true);
       expect(shouldIgnore('docs/wip.draft.md', patterns)).toBe(true);
       expect(shouldIgnore('README.md', patterns)).toBe(false);
+    });
+
+    it('clean-wiki removes files that now match the ignore list', () => {
+      const wikiRoot = join(tmp, '.pinakes', 'wiki');
+      mkdirSync(join(wikiRoot, 'drafts'), { recursive: true });
+      mkdirSync(join(wikiRoot, 'docs'), { recursive: true });
+      writeFileSync(join(wikiRoot, 'drafts', 'wip.md'), '# WIP');
+      writeFileSync(join(wikiRoot, 'docs', 'guide.md'), '# Guide');
+      writeFileSync(join(tmp, '.pinakesignore'), 'drafts/\n');
+
+      const patterns = loadIgnorePatterns(tmp);
+      const removed = cleanIgnoredFromWiki(wikiRoot, patterns);
+
+      expect(removed).toBe(1);
+      expect(existsSync(join(wikiRoot, 'drafts', 'wip.md'))).toBe(false);
+      expect(existsSync(join(wikiRoot, 'docs', 'guide.md'))).toBe(true);
     });
   });
 });

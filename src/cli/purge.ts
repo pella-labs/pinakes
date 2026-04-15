@@ -12,6 +12,7 @@ import { resolveCliDbPath } from '../paths.js';
 export interface PurgeOptions {
   scope: 'project' | 'personal';
   confirm?: boolean;
+  projectRoot?: string;
   dbPath?: string;
   profileDbPath?: string;
 }
@@ -60,4 +61,3 @@ export function renderPurge(result: PurgeResult): string {
   }
   return `${result.scope} DB NOT deleted: ${result.reason} (${result.dbPath})`;
 }
-
