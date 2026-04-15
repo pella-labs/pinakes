@@ -111,13 +111,13 @@ After bootstrap, edit `.pinakes/wiki/` directly. If you later tighten `.pinakesi
 
 ## Example queries
 
-### Search
+### knowledge_search
 
 ```
 knowledge_search({ query: "authentication flow", scope: "project" })
 ```
 
-### Execute (code-mode)
+### knowledge_query (code-mode)
 
 ```javascript
 // Browse the knowledge base index
